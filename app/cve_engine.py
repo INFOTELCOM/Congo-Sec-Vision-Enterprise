@@ -9,22 +9,28 @@ def _nums(v):
 def _applies(cve, name, vendor, version):
     hay=(str(name)+" "+str(vendor)).lower().replace("_"," ")
     ver=_nums(version); uncertain=False
-    for cfg in cve.get("configurations",[]):
-        for node in cfg.get("nodes",[]):
+    def walk(nodes):
+        for node in nodes or []:
             for item in node.get("cpeMatch",[]):
                 if not item.get("vulnerable",False): continue
                 parts=str(item.get("criteria","")).lower().split(":")
                 if len(parts)<6: continue
                 tokens=[x.replace("_"," ") for x in parts[3:5] if x not in ("*","-")]
                 if not tokens or not any(t in hay or t.replace(" ","") in hay.replace(" ","") for t in tokens): continue
-                if not ver: uncertain=True; continue
+                if not ver: continue
                 cpever=parts[5]
                 if cpever not in ("*","-") and _nums(cpever) and ver!=_nums(cpever): continue
-                lower=item.get("versionStartIncluding") or item.get("versionStartExcluding")
-                upper=item.get("versionEndIncluding") or item.get("versionEndExcluding")
-                if lower and _nums(lower) and ver<_nums(lower): continue
-                if upper and _nums(upper) and (ver>_nums(upper) or (ver==_nums(upper) and item.get("versionEndExcluding"))): continue
-                return "version-range-match"
+                lower_inc=item.get("versionStartIncluding"); lower_exc=item.get("versionStartExcluding")
+                upper_inc=item.get("versionEndIncluding"); upper_exc=item.get("versionEndExcluding")
+                if lower_inc and _nums(lower_inc) and ver<_nums(lower_inc): continue
+                if lower_exc and _nums(lower_exc) and ver<=_nums(lower_exc): continue
+                if upper_inc and _nums(upper_inc) and ver>_nums(upper_inc): continue
+                if upper_exc and _nums(upper_exc) and ver>=_nums(upper_exc): continue
+                return True
+            if walk(node.get("children",[])): return True
+        return False
+    for cfg in cve.get("configurations",[]):
+        if walk(cfg.get("nodes",[])): return "version-range-match"
     return "candidate"
 
 def search_nvd(keyword, api_key="", published_after=None):
