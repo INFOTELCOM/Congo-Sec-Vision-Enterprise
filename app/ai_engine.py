@@ -61,7 +61,7 @@ def cve_remediation_advice(cve_id, severity, software_name, version, title):
             "Si le correctif n’est pas disponible, appliquer uniquement les mesures compensatoires documentées par l’éditeur.",
             "Planifier une fenêtre de maintenance, sauvegarder la configuration et contrôler le service après correction.",
         ],
-        "references": [f"https://nvd.nist.gov/vuln/detail/{cve_id}"] if re.fullmatch(r"CVE-\\d{4}-\\d{4,}", str(cve_id or "")) else [],
+        "references": [f"https://nvd.nist.gov/vuln/detail/{cve_id}"] if re.fullmatch(r"CVE-[0-9]{4}-[0-9]{4,}", str(cve_id or "")) else [],
         "validation_required": True,
         "automatic_remediation": False,
         "evidence_note": "Une correspondance par nom de logiciel n’établit pas à elle seule que la version est vulnérable.",
