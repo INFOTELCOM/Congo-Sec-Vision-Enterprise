@@ -3,7 +3,7 @@ import json, os, re, time, urllib.parse, urllib.request
 from datetime import datetime, timezone
 
 def _nums(v):
-    found=re.findall(r"\\d+",str(v or ""))
+    found=re.findall(r"\d+",str(v or ""))
     return tuple(int(x) for x in found[:8])
 
 def _applies(cve, name, vendor, version):
