@@ -1,12 +1,16 @@
-import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time
+import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio, contextvars
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from app.ai_engine import analyze_logs, cve_remediation_advice
+from app.cve_engine import scan_product
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
-ADMIN = os.getenv("ADMIN_TOKEN", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
+_internal_task = contextvars.ContextVar("csv_internal_task", default=False)
 ENROLL = os.getenv("AGENT_ENROLLMENT_TOKEN", "")
 NVD_API_KEY = os.getenv("NVD_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
@@ -53,13 +57,25 @@ def init():
           id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT DEFAULT '',
           trigger_type TEXT NOT NULL DEFAULT 'manual', enabled INTEGER NOT NULL DEFAULT 0,
           requires_approval INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS ai_agents(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT UNIQUE NOT NULL,
+          name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL, last_analysis_at TEXT, last_report_id INTEGER,
+          FOREIGN KEY(asset_id) REFERENCES assets(id));
+        CREATE TABLE IF NOT EXISTS ai_reports(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT NOT NULL,
+          report_type TEXT NOT NULL, summary TEXT NOT NULL, findings_json TEXT NOT NULL,
+          events_reviewed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+          FOREIGN KEY(asset_id) REFERENCES assets(id));
         """)
         cols={r["name"] for r in c.execute("PRAGMA table_info(events)").fetchall()}
         if "raw" not in cols: c.execute("ALTER TABLE events ADD COLUMN raw TEXT")
-if not ADMIN or not ENROLL:
-    raise RuntimeError("ADMIN_TOKEN and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
-if ADMIN == ENROLL:
-    raise RuntimeError("ADMIN_TOKEN and AGENT_ENROLLMENT_TOKEN must be different")
+        vuln_cols={r["name"] for r in c.execute("PRAGMA table_info(vulnerabilities)").fetchall()}
+        for col, ddl in {"software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''","match_confidence":"TEXT DEFAULT 'candidate'","cve_url":"TEXT DEFAULT ''"}.items():
+            if col not in vuln_cols: c.execute("ALTER TABLE vulnerabilities ADD COLUMN "+col+" "+ddl)
+        c.execute("CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
+if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY or not ENROLL:
+    raise RuntimeError("SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
 init()
 
 app = FastAPI(title="Congo Sec Vision API", version="0.3.1")
@@ -78,7 +94,32 @@ def bearer(value):
     if not value or not value.startswith("Bearer "): return None
     return value[7:]
 def require_admin(auth):
-    if bearer(auth) != ADMIN: raise HTTPException(401, "Invalid administrator token")
+    if _internal_task.get():
+        return "system"
+    token = bearer(auth)
+    if not token:
+        raise HTTPException(401, "Supabase session required")
+    req = urllib.request.Request(
+        SUPABASE_URL + "/auth/v1/user",
+        headers={"apikey": SUPABASE_PUBLISHABLE_KEY, "Authorization": "Bearer " + token},
+        method="GET"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            user = json.loads(response.read())
+    except Exception:
+        raise HTTPException(401, "Invalid or expired Supabase session")
+    metadata = user.get("app_metadata") or {}
+    if metadata.get("role") != "admin":
+        raise HTTPException(403, "Administrator role required")
+    return str(user.get("email") or user.get("id") or "admin")
+
+def run_internal_ai(asset_id):
+    marker = _internal_task.set(True)
+    try:
+        analyze_asset_ai(asset_id, None)
+    finally:
+        _internal_task.reset(marker)
 def audit(action, target="", details="", actor="admin"):
     with conn() as c:
         c.execute("INSERT INTO audit_logs(actor,action,target,details,created_at) VALUES(?,?,?,?,?)",
@@ -126,18 +167,29 @@ def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"
 def auth_check(authorization: str|None=Header(default=None)):
     require_admin(authorization); return {"authenticated":True}
 @app.post("/api/agents/enroll")
-async def enroll(request:Request,authorization:str|None=Header(default=None)):
+async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     if bearer(authorization)!=ENROLL: raise HTTPException(403,"Enrollment not authorized")
     aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
-    with conn() as c: c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
+    with conn() as c:
+        c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
+        c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
+                  (aid,"CSVA-AI-"+aid[:8],"active",now()))
+    background_tasks.add_task(run_internal_ai, aid)
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
-    return {"asset_id":aid,"agent_token":token}
+    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True}
 @app.post("/api/agents/heartbeat")
-async def heartbeat(request:Request,authorization:str|None=Header(default=None)):
+async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     aid=require_agent(authorization); data=await request.json(); asset_inventory(data,aid)
+    with conn() as c:
+        c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
+                  (aid,"CSVA-AI-"+aid[:8],"active",now()))
+        ai_row=c.execute("SELECT last_analysis_at FROM ai_agents WHERE asset_id=?",(aid,)).fetchone()
+    last=ai_row["last_analysis_at"] if ai_row else None
+    due=(not last) or (last < (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat())
+    if due: background_tasks.add_task(run_internal_ai, aid)
     for entry in data.get("logs",[])[:250]:
         ingest_log(aid,entry)
-    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250)}
+    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due}
 
 def ingest_log(asset_id, entry):
     message=str(entry.get("message",""))[:4000]
@@ -207,41 +259,62 @@ def software(authorization:str|None=Header(default=None)):
         rows=c.execute("SELECT s.*,a.hostname FROM software s LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.name").fetchall()
     return [dict(r) for r in rows]
 
-def nvd_search(keyword):
-    params=urllib.parse.urlencode({"keywordSearch":keyword,"resultsPerPage":20})
-    url="https://services.nvd.nist.gov/rest/json/cves/2.0?"+params
-    req=urllib.request.Request(url,headers={"User-Agent":"CongoSecVision/0.2"})
-    if NVD_API_KEY: req.add_header("apiKey",NVD_API_KEY)
-    with urllib.request.urlopen(req,timeout=25) as r: return json.loads(r.read())
-@app.post("/api/cve/sync")
+def run_cve_sync(limit=25):
+    with conn() as c:
+        settings=c.execute("SELECT value FROM system_settings WHERE key='cve_scan_offset'").fetchone()
+        offset=int(settings['value']) if settings else 0
+        products=c.execute("SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='' ORDER BY name LIMIT ? OFFSET ?",(max(1,min(int(limit),100)),offset)).fetchall()
+    checked=0; added=0; refreshed=0; matched=0; errors=[]
+    for idx,p in enumerate(products):
+        if idx: time.sleep(0.7 if NVD_API_KEY else 6.1)
+        try:
+            records=scan_product(p['name'],p['version'],p['vendor'],NVD_API_KEY)
+            checked+=1
+            for v in records:
+                with conn() as c:
+                    old=c.execute('SELECT id FROM vulnerabilities WHERE asset_id=? AND cve_id=?',(p['asset_id'],v['cve_id'])).fetchone()
+                    values=(v['severity'],v['title'],p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'])
+                    if old:
+                        c.execute("UPDATE vulnerabilities SET severity=?,title=?,software_name=?,software_version=?,vendor=?,match_confidence=?,cve_url=? WHERE id=?",values+(old['id'],)); refreshed+=1
+                    else:
+                        c.execute("INSERT INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at,software_name,software_version,vendor,match_confidence,cve_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (p['asset_id'],v['cve_id'],v['severity'],v['title'],'needs-validation','NVD CVE API',now(),p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'])); added+=1
+                if v['match_confidence']=='version-range-match': matched+=1
+        except Exception as exc: errors.append({'software':p['name'],'error':str(exc)[:220]})
+    with conn() as c:
+        total=c.execute("SELECT COUNT(*) n FROM (SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='')").fetchone()['n']
+        next_offset=0 if offset+len(products)>=total else offset+len(products)
+        c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('cve_scan_offset',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(str(next_offset),now()))
+        c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('last_cve_sync',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(now(),now()))
+    return {'software_checked':checked,'software_total':total,'candidate_records_added':added,'records_refreshed':refreshed,
+      'version_range_matches':matched,'errors':errors,'last_sync':now(),
+      'warning':'CPE/version range match is a candidate, not proof of exposure. Check vendor advisories, edition, backported fixes and host context.'}
+
+@app.post('/api/cve/sync')
 def cve_sync(authorization:str|None=Header(default=None)):
     require_admin(authorization)
-    with conn() as c: products=c.execute("SELECT DISTINCT name,version,asset_id FROM software WHERE name!='' LIMIT 5").fetchall()
-    checked=0; added=0; errors=[]
-    for idx,p in enumerate(products):
-        if idx:
-            time.sleep(0.7 if NVD_API_KEY else 6.0)
-        # NVD keyword matching is a candidate-discovery step, not proof of applicability.
-        query=str(p["name"])[:100]
-        try:
-            result=nvd_search(query); checked+=1
-            for item in result.get("vulnerabilities",[]):
-                cv=item.get("cve",{}); cve_id=cv.get("id","")
-                desc=next((d.get("value","") for d in cv.get("descriptions",[]) if d.get("lang")=="en"),"")
-                metrics=cv.get("metrics",{}); sev="unknown"
-                for metric in metrics.get("cvssMetricV31",[])+metrics.get("cvssMetricV30",[]):
-                    sev=metric.get("cvssData",{}).get("baseSeverity","unknown").lower(); break
-                title=(desc[:220] or "NVD candidate match")
-                with conn() as c:
-                    before=c.total_changes
-                    c.execute("INSERT OR IGNORE INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at) VALUES(?,?,?,?,?,?,?)",
-                              (p["asset_id"],cve_id,sev,title,"needs-validation","NVD CVE API",now()))
-                    if c.total_changes>before: added+=1
-        except Exception as e: errors.append({"software":query,"error":str(e)[:220]})
-    with conn() as c: remaining=max(0,c.execute("SELECT COUNT(DISTINCT name) n FROM software WHERE name!=''").fetchone()["n"]-checked)
-    return {"software_checked":checked,"candidate_records_added":added,"remaining_software_estimate":remaining,"errors":errors,
-            "warning":"NVD keyword matches are candidates only. Validate CPE, affected version ranges and vendor advisories before declaring a host vulnerable."}
+    result=run_cve_sync(int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
+    audit('cve.sync','NVD',json.dumps({k:result[k] for k in ('software_checked','candidate_records_added','records_refreshed','version_range_matches')}))
+    return result
 
+async def periodic_cve_worker():
+    interval=max(1,int(os.getenv('CVE_SYNC_INTERVAL_HOURS','24')))*3600
+    await asyncio.sleep(30)
+    while True:
+        try: await asyncio.to_thread(run_cve_sync,int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
+        except Exception as exc: audit('cve.sync.error','NVD',str(exc)[:500])
+        await asyncio.sleep(interval)
+
+@app.on_event('startup')
+async def start_periodic_cve_worker(): app.state.cve_task=asyncio.create_task(periodic_cve_worker())
+
+@app.on_event('shutdown')
+async def stop_periodic_cve_worker():
+    task=getattr(app.state,'cve_task',None)
+    if task:
+        task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
 @app.get("/api/topology")
 def topology(authorization:str|None=Header(default=None)):
     require_admin(authorization)
@@ -312,7 +385,7 @@ async def create_event(request:Request,authorization:str|None=Header(default=Non
     audit("event.create", d.get("asset_id",""), d.get("message",""))
     return {"created":True}
 @app.get("/api/config")
-def config(): return {"product":"Congo Sec Vision","version":"0.3.1","mode":"laboratory","cve_provider":"NVD","ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
+def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","24")),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
 
 
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
@@ -449,7 +522,87 @@ async def create_workflow(request:Request, authorization: str|None=Header(defaul
     audit("workflow.create",cur.lastrowid,name)
     return {"id":cur.lastrowid,"enabled":False,"requires_approval":True}
 
+
+@app.get("/api/ai/agents")
+def list_ai_agents(authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        rows=c.execute("""SELECT g.*,a.hostname,a.platform,a.last_seen
+          FROM ai_agents g JOIN assets a ON a.id=g.asset_id ORDER BY a.hostname""").fetchall()
+    return [dict(r) for r in rows]
+
+@app.post("/api/ai/agents/{asset_id}/analyze")
+def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        asset=c.execute("SELECT * FROM assets WHERE id=?",(asset_id,)).fetchone()
+        if not asset: raise HTTPException(404,"Asset not found")
+        c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
+                  (asset_id,"CSVA-AI-"+asset_id[:8],"active",now()))
+        raw_events=c.execute("SELECT * FROM events WHERE asset_id=? ORDER BY created_at DESC LIMIT 500",(asset_id,)).fetchall()
+        software_rows=c.execute("SELECT name,version,vendor FROM software WHERE asset_id=? ORDER BY name",(asset_id,)).fetchall()
+        vuln_rows=c.execute("SELECT * FROM vulnerabilities WHERE asset_id=? ORDER BY created_at DESC LIMIT 100",(asset_id,)).fetchall()
+    log_inputs=[{"message":e["message"],"source":e["category"] or "endpoint","created_at":e["created_at"]} for e in raw_events]
+    report=analyze_logs(log_inputs)
+    cve_advice=[{"cve_id":v["cve_id"],"severity":v["severity"],"title":v["title"],
+       "software_name":v["software_name"],"software_version":v["software_version"],"vendor":v["vendor"],
+       "match_confidence":v["match_confidence"],"cve_url":v["cve_url"],
+       **cve_remediation_advice(v["cve_id"],v["severity"],"", "",v["title"])} for v in vuln_rows]
+    llm_result=None
+    if LLM_BASE_URL and LLM_MODEL and (log_inputs or software_rows or vuln_rows):
+        prompt=("Tu es un analyste SOC défensif. Analyse exclusivement les preuves fournies. N'invente pas de CVE, "
+          "de version corrigée ou de compromission. Distingue faits et hypothèses. Propose des mesures non destructives. "
+          "Réponds en français. Données: "+json.dumps({"host":asset["hostname"],"log_report":report,
+          "software":[dict(x) for x in software_rows[:100]],"cve_candidates":cve_advice[:30]},ensure_ascii=False)[:24000])
+        payload=json.dumps({"model":LLM_MODEL,"messages":[{"role":"user","content":prompt}],"temperature":0.1}).encode()
+        headers={"Content-Type":"application/json"}
+        if LLM_API_KEY: headers["Authorization"]="Bearer "+LLM_API_KEY
+        req=urllib.request.Request(LLM_BASE_URL+"/chat/completions",data=payload,headers=headers,method="POST")
+        try:
+            with urllib.request.urlopen(req,timeout=45) as response:
+                llm_result=json.loads(response.read()).get("choices",[{}])[0].get("message",{}).get("content")
+        except Exception as exc: llm_result={"status":"fallback","reason":str(exc)[:180]}
+    summary={"host":asset["hostname"],"platform":asset["platform"],"logs":report,
+      "software_inventory_count":len(software_rows),"software_inventory":[dict(x) for x in software_rows],
+      "timeline":sorted([{"timestamp":e["created_at"],"source":e["category"],"severity":e["severity"],"message":e["message"]} for e in raw_events],key=lambda x:x["timestamp"] or ""),
+      "cve_candidates_count":len(vuln_rows),
+      "cve_remediation_advice":cve_advice,"llm_analysis":llm_result,
+      "mode":"llm+rules" if llm_result else "local-rules",
+      "warning":"Les CVE issues d'une recherche par nom restent des candidates. Confirmer CPE, version affectée et avis éditeur."}
+    stamp=now()
+    with conn() as c:
+        cur=c.execute("INSERT INTO ai_reports(asset_id,report_type,summary,findings_json,events_reviewed,created_at) VALUES(?,?,?,?,?,?)",
+          (asset_id,"endpoint-analysis",json.dumps(summary,ensure_ascii=False),json.dumps(report["findings"],ensure_ascii=False),len(log_inputs),stamp))
+        report_id=cur.lastrowid
+        c.execute("UPDATE ai_agents SET last_analysis_at=?,last_report_id=?,status='active' WHERE asset_id=?",
+                  (stamp,report_id,asset_id))
+    audit("ai.asset.analyze",asset_id,f"report={report_id}; logs={len(log_inputs)}")
+    return {"report_id":report_id,**summary}
+
+@app.get("/api/ai/agents/{asset_id}/reports")
+def list_asset_ai_reports(asset_id: str, authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        rows=c.execute("SELECT id,report_type,summary,events_reviewed,created_at FROM ai_reports WHERE asset_id=? ORDER BY id DESC LIMIT 30",(asset_id,)).fetchall()
+    return [dict(x) for x in rows]
+
+@app.get("/api/reports/logs")
+def logs_report(authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        assets=c.execute("SELECT id,hostname,platform,last_seen FROM assets ORDER BY hostname").fetchall()
+        events=c.execute("""SELECT e.*,a.hostname FROM events e LEFT JOIN assets a ON a.id=e.asset_id
+          WHERE e.category='endpoint-log' OR e.category='endpoint' ORDER BY e.created_at DESC LIMIT 1000""").fetchall()
+        findings=c.execute("SELECT f.*,a.hostname FROM log_findings f LEFT JOIN assets a ON a.id=f.asset_id ORDER BY f.created_at DESC LIMIT 500").fetchall()
+    return {"generated_at":now(),"machines_total":len(assets),"machines":[dict(a) for a in assets],
+      "events_reviewed":len(events),"events":[dict(e) for e in events[:250]],
+      "findings_total":len(findings),"findings":[dict(f) for f in findings[:250]],
+      "summary":{"critical":sum(f["severity"]=="critical" for f in findings),"high":sum(f["severity"]=="high" for f in findings),
+        "medium":sum(f["severity"]=="medium" for f in findings),"low":sum(f["severity"]=="low" for f in findings)},
+      "limitations":["Rapport limité aux journaux remontés par les agents et conservés dans la base.",
+        "Les alertes sont des signaux à vérifier, pas une preuve automatique d'incident."]}
+
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
     require_admin(authorization)
-    return {"authentication":"admin bearer token","database":"sqlite persistent","tls":"terminaison reverse-proxy requise en déploiement","mfa":"not-configured","rbac":"team roles metadata; per-user authentication not enabled","remediation":"approval-only; no remote execution","agent_enrollment":"shared bootstrap token; rotate and protect","mode":"laboratory"}
+    return {"authentication":"Supabase Auth session with admin app_metadata role","database":"sqlite persistent","tls":"terminaison reverse-proxy requise en déploiement","mfa":"not-configured","rbac":"Supabase app_metadata admin role; granular roles not configured","remediation":"approval-only; no remote execution","agent_enrollment":"shared bootstrap token; rotate and protect","mode":"laboratory"}
