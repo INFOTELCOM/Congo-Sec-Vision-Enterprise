@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   build:
-    name: Build \${{ matrix.name }}
+    name: Build ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,7 +25,7 @@ jobs:
           - name: macOS
             os: macos-latest
             bundles: dmg
-    runs-on: \${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,9 +40,9 @@ jobs:
       - name: Configure public web client
         shell: bash
         env:
-          API_BASE_URL: \${{ vars.API_BASE_URL }}
-          SUPABASE_URL: \${{ vars.SUPABASE_URL }}
-          SUPABASE_PUBLISHABLE_KEY: \${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
         run: |
           python - <<'PY'
           import json, os
@@ -55,7 +55,7 @@ jobs:
           if not values["CSV_SUPABASE_URL"].startswith("https://") or not values["CSV_SUPABASE_PUBLISHABLE_KEY"]:
               raise SystemExit("Configure SUPABASE_URL et SUPABASE_PUBLISHABLE_KEY dans les variables GitHub.")
           Path("web/config.js").write_text("".join(
-              f"window.{key} = {json.dumps(value)};\\n" for key, value in values.items()
+              f"window.{key} = {json.dumps(value)};\n" for key, value in values.items()
           ), encoding="utf-8")
           PY
       - name: Install desktop dependencies
@@ -63,11 +63,11 @@ jobs:
         run: npm install
       - name: Build installers
         working-directory: desktop
-        run: npm run tauri -- build --bundles \${{ matrix.bundles }}
+        run: npm run tauri -- build --bundles ${{ matrix.bundles }}
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: congo-sec-vision-\${{ matrix.name }}
+          name: congo-sec-vision-${{ matrix.name }}
           path: desktop/src-tauri/target/release/bundle/**
           if-no-files-found: error
           retention-days: 30
