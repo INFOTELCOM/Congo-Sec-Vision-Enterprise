@@ -1,6 +1,6 @@
 import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -144,17 +144,22 @@ async def enroll(request:Request,authorization:str|None=Header(default=None)):
         c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
+    background_tasks.add_task(analyze_asset_ai, aid, "Bearer "+ADMIN)
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
-    return {"asset_id":aid,"agent_token":token}
+    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True}
 @app.post("/api/agents/heartbeat")
-async def heartbeat(request:Request,authorization:str|None=Header(default=None)):
+async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     aid=require_agent(authorization); data=await request.json(); asset_inventory(data,aid)
     with conn() as c:
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
+        ai_row=c.execute("SELECT last_analysis_at FROM ai_agents WHERE asset_id=?",(aid,)).fetchone()
+    last=ai_row["last_analysis_at"] if ai_row else None
+    due=(not last) or (last < (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat())
+    if due: background_tasks.add_task(analyze_asset_ai, aid, "Bearer "+ADMIN)
     for entry in data.get("logs",[])[:250]:
         ingest_log(aid,entry)
-    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250)}
+    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due}
 
 def ingest_log(asset_id, entry):
     message=str(entry.get("message",""))[:4000]
