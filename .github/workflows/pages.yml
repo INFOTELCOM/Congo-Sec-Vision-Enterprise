@@ -23,13 +23,13 @@ jobs:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
         run: |
           python - <<'PY'
-          import os
+          import json, os
           from pathlib import Path
           value = os.environ.get("API_BASE_URL", "").rstrip("/")
           if value and not value.startswith("https://"):
               raise SystemExit("API_BASE_URL doit commencer par https://")
           Path("web/config.js").write_text(
-              "window.CSV_API_BASE = " + __import__("json").dumps(value) + ";\\n",
+              "window.CSV_API_BASE = " + json.dumps(value) + ";\\n",
               encoding="utf-8"
           )
           PY
