@@ -21,11 +21,15 @@ jobs:
       - name: Configure API endpoint
         env:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
         run: |
           python - <<'PY'
           import json, os
           from pathlib import Path
           value = os.environ.get("API_BASE_URL", "").rstrip("/")
+          supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+          publishable_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
           if value and not value.startswith("https://"):
               raise SystemExit("API_BASE_URL doit commencer par https://")
           Path("web/config.js").write_text(
