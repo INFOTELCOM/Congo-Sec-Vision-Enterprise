@@ -4,6 +4,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from app.ai_engine import analyze_logs, cve_remediation_advice
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 ADMIN = os.getenv("ADMIN_TOKEN", "")
@@ -53,6 +54,16 @@ def init():
           id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT DEFAULT '',
           trigger_type TEXT NOT NULL DEFAULT 'manual', enabled INTEGER NOT NULL DEFAULT 0,
           requires_approval INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS ai_agents(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT UNIQUE NOT NULL,
+          name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+          created_at TEXT NOT NULL, last_analysis_at TEXT, last_report_id INTEGER,
+          FOREIGN KEY(asset_id) REFERENCES assets(id));
+        CREATE TABLE IF NOT EXISTS ai_reports(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT NOT NULL,
+          report_type TEXT NOT NULL, summary TEXT NOT NULL, findings_json TEXT NOT NULL,
+          events_reviewed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+          FOREIGN KEY(asset_id) REFERENCES assets(id));
         """)
         cols={r["name"] for r in c.execute("PRAGMA table_info(events)").fetchall()}
         if "raw" not in cols: c.execute("ALTER TABLE events ADD COLUMN raw TEXT")
@@ -129,12 +140,18 @@ def auth_check(authorization: str|None=Header(default=None)):
 async def enroll(request:Request,authorization:str|None=Header(default=None)):
     if bearer(authorization)!=ENROLL: raise HTTPException(403,"Enrollment not authorized")
     aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
-    with conn() as c: c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
+    with conn() as c:
+        c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
+        c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
+                  (aid,"CSVA-AI-"+aid[:8],"active",now()))
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
     return {"asset_id":aid,"agent_token":token}
 @app.post("/api/agents/heartbeat")
 async def heartbeat(request:Request,authorization:str|None=Header(default=None)):
     aid=require_agent(authorization); data=await request.json(); asset_inventory(data,aid)
+    with conn() as c:
+        c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
+                  (aid,"CSVA-AI-"+aid[:8],"active",now()))
     for entry in data.get("logs",[])[:250]:
         ingest_log(aid,entry)
     return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250)}
@@ -448,6 +465,82 @@ async def create_workflow(request:Request, authorization: str|None=Header(defaul
           (name,str(d.get("description",""))[:2000],str(d.get("trigger_type","manual")),0,1,now()))
     audit("workflow.create",cur.lastrowid,name)
     return {"id":cur.lastrowid,"enabled":False,"requires_approval":True}
+
+
+@app.get("/api/ai/agents")
+def list_ai_agents(authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        rows=c.execute("""SELECT g.*,a.hostname,a.platform,a.last_seen
+          FROM ai_agents g JOIN assets a ON a.id=g.asset_id ORDER BY a.hostname""").fetchall()
+    return [dict(r) for r in rows]
+
+@app.post("/api/ai/agents/{asset_id}/analyze")
+def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        asset=c.execute("SELECT * FROM assets WHERE id=?",(asset_id,)).fetchone()
+        if not asset: raise HTTPException(404,"Asset not found")
+        c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
+                  (asset_id,"CSVA-AI-"+asset_id[:8],"active",now()))
+        raw_events=c.execute("SELECT * FROM events WHERE asset_id=? ORDER BY created_at DESC LIMIT 500",(asset_id,)).fetchall()
+        software_rows=c.execute("SELECT name,version,vendor FROM software WHERE asset_id=? ORDER BY name",(asset_id,)).fetchall()
+        vuln_rows=c.execute("SELECT * FROM vulnerabilities WHERE asset_id=? ORDER BY created_at DESC LIMIT 100",(asset_id,)).fetchall()
+    log_inputs=[{"message":e["message"],"source":e["category"] or "endpoint","created_at":e["created_at"]} for e in raw_events]
+    report=analyze_logs(log_inputs)
+    cve_advice=[{"cve_id":v["cve_id"],"severity":v["severity"],"title":v["title"],
+       **cve_remediation_advice(v["cve_id"],v["severity"],"", "",v["title"])} for v in vuln_rows]
+    llm_result=None
+    if LLM_BASE_URL and LLM_MODEL and log_inputs:
+        prompt=("Tu es un analyste SOC défensif. Analyse exclusivement les preuves fournies. N'invente pas de CVE, "
+          "de version corrigée ou de compromission. Distingue faits et hypothèses. Propose des mesures non destructives. "
+          "Réponds en français. Données: "+json.dumps({"host":asset["hostname"],"log_report":report,
+          "software":[dict(x) for x in software_rows[:100]],"cve_candidates":cve_advice[:30]},ensure_ascii=False)[:24000])
+        payload=json.dumps({"model":LLM_MODEL,"messages":[{"role":"user","content":prompt}],"temperature":0.1}).encode()
+        headers={"Content-Type":"application/json"}
+        if LLM_API_KEY: headers["Authorization"]="Bearer "+LLM_API_KEY
+        req=urllib.request.Request(LLM_BASE_URL+"/chat/completions",data=payload,headers=headers,method="POST")
+        try:
+            with urllib.request.urlopen(req,timeout=45) as response:
+                llm_result=json.loads(response.read()).get("choices",[{}])[0].get("message",{}).get("content")
+        except Exception as exc: llm_result={"status":"fallback","reason":str(exc)[:180]}
+    summary={"host":asset["hostname"],"platform":asset["platform"],"logs":report,
+      "software_inventory_count":len(software_rows),"cve_candidates_count":len(vuln_rows),
+      "cve_remediation_advice":cve_advice,"llm_analysis":llm_result,
+      "mode":"llm+rules" if llm_result else "local-rules",
+      "warning":"Les CVE issues d'une recherche par nom restent des candidates. Confirmer CPE, version affectée et avis éditeur."}
+    stamp=now()
+    with conn() as c:
+        cur=c.execute("INSERT INTO ai_reports(asset_id,report_type,summary,findings_json,events_reviewed,created_at) VALUES(?,?,?,?,?,?)",
+          (asset_id,"endpoint-analysis",json.dumps(summary,ensure_ascii=False),json.dumps(report["findings"],ensure_ascii=False),len(log_inputs),stamp))
+        report_id=cur.lastrowid
+        c.execute("UPDATE ai_agents SET last_analysis_at=?,last_report_id=?,status='active' WHERE asset_id=?",
+                  (stamp,report_id,asset_id))
+    audit("ai.asset.analyze",asset_id,f"report={report_id}; logs={len(log_inputs)}")
+    return {"report_id":report_id,**summary}
+
+@app.get("/api/ai/agents/{asset_id}/reports")
+def list_asset_ai_reports(asset_id: str, authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        rows=c.execute("SELECT id,report_type,summary,events_reviewed,created_at FROM ai_reports WHERE asset_id=? ORDER BY id DESC LIMIT 30",(asset_id,)).fetchall()
+    return [dict(x) for x in rows]
+
+@app.get("/api/reports/logs")
+def logs_report(authorization: str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        assets=c.execute("SELECT id,hostname,platform,last_seen FROM assets ORDER BY hostname").fetchall()
+        events=c.execute("""SELECT e.*,a.hostname FROM events e LEFT JOIN assets a ON a.id=e.asset_id
+          WHERE e.category='endpoint-log' OR e.category='endpoint' ORDER BY e.created_at DESC LIMIT 1000""").fetchall()
+        findings=c.execute("SELECT f.*,a.hostname FROM log_findings f LEFT JOIN assets a ON a.id=f.asset_id ORDER BY f.created_at DESC LIMIT 500").fetchall()
+    return {"generated_at":now(),"machines_total":len(assets),"machines":[dict(a) for a in assets],
+      "events_reviewed":len(events),"events":[dict(e) for e in events[:250]],
+      "findings_total":len(findings),"findings":[dict(f) for f in findings[:250]],
+      "summary":{"critical":sum(f["severity"]=="critical" for f in findings),"high":sum(f["severity"]=="high" for f in findings),
+        "medium":sum(f["severity"]=="medium" for f in findings),"low":sum(f["severity"]=="low" for f in findings)},
+      "limitations":["Rapport limité aux journaux remontés par les agents et conservés dans la base.",
+        "Les alertes sont des signaux à vérifier, pas une preuve automatique d'incident."]}
 
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
