@@ -186,7 +186,7 @@ async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorizat
         ai_row=c.execute("SELECT last_analysis_at FROM ai_agents WHERE asset_id=?",(aid,)).fetchone()
     last=ai_row["last_analysis_at"] if ai_row else None
     due=(not last) or (last < (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat())
-    if due: background_tasks.add_task(analyze_asset_ai, aid, "Bearer "+ADMIN)
+    if due: background_tasks.add_task(run_internal_ai, aid)
     for entry in data.get("logs",[])[:250]:
         ingest_log(aid,entry)
     return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due}
@@ -605,4 +605,4 @@ def logs_report(authorization: str|None=Header(default=None)):
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
     require_admin(authorization)
-    return {"authentication":"admin bearer token","database":"sqlite persistent","tls":"terminaison reverse-proxy requise en déploiement","mfa":"not-configured","rbac":"team roles metadata; per-user authentication not enabled","remediation":"approval-only; no remote execution","agent_enrollment":"shared bootstrap token; rotate and protect","mode":"laboratory"}
+    return {"authentication":"Supabase Auth session with admin app_metadata role","database":"sqlite persistent","tls":"terminaison reverse-proxy requise en déploiement","mfa":"not-configured","rbac":"Supabase app_metadata admin role; granular roles not configured","remediation":"approval-only; no remote execution","agent_enrollment":"shared bootstrap token; rotate and protect","mode":"laboratory"}
