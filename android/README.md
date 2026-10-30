@@ -16,3 +16,7 @@ Accueil, actifs, événements, constats IA, incidents (création / changement de
 
 ## Limites héritées de l'API 0.3.1
 Le backend utilise un jeton administrateur partagé. Les rôles de l'équipe ne sont pas encore un RBAC effectif ; MFA, SSO et notifications push ne sont pas implémentés. Les approbations ne déclenchent aucune commande. L'analyse IA reste en `local-rules` si aucun fournisseur LLM n'est configuré. La synchronisation CVE produit des candidats à valider, pas des vulnérabilités confirmées.
+
+
+## Compilation automatique
+Le workflow GitHub Actions « Build Android APK » compile un APK debug après toute modification du dossier `android/`. Pour lancer une compilation manuellement : dépôt → Actions → Build Android APK → Run workflow. Après réussite, ouvrir l'exécution puis télécharger l'artifact `Congo-Sec-Vision-Android-debug`. Cet APK debug est destiné aux essais et n'est pas signé pour une publication Play Store.
