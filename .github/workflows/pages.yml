@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Configure API endpoint
+      - name: Configure public client settings
         env:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
           SUPABASE_URL: ${{ vars.SUPABASE_URL }}
@@ -27,21 +27,24 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
-          value = os.environ.get("API_BASE_URL", "").rstrip("/")
+
+          api_base = os.environ.get("API_BASE_URL", "").rstrip("/")
           supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
           publishable_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
-          if value and not value.startswith("https://"):
+
+          if api_base and not api_base.startswith("https://"):
               raise SystemExit("API_BASE_URL doit commencer par https://")
-          if supabase_url and not supabase_url.startswith("https://"):
-              raise SystemExit("SUPABASE_URL doit commencer par https://")
+          if not supabase_url.startswith("https://"):
+              raise SystemExit("SUPABASE_URL manquante ou invalide dans les variables GitHub")
           if not publishable_key:
-              raise SystemExit("SUPABASE_PUBLISHABLE_KEY manquante")
-          Path("web/config.js").write_text(
-              "window.CSV_API_BASE = " + json.dumps(value) + ";\\n" +
-              "window.CSV_SUPABASE_URL = " + json.dumps(supabase_url) + ";\\n" +
-              "window.CSV_SUPABASE_PUBLISHABLE_KEY = " + json.dumps(publishable_key) + ";\\n",
-              encoding="utf-8"
+              raise SystemExit("SUPABASE_PUBLISHABLE_KEY manquante dans les variables GitHub")
+
+          config = (
+              "window.CSV_API_BASE = " + json.dumps(api_base) + ";\n"
+              "window.CSV_SUPABASE_URL = " + json.dumps(supabase_url) + ";\n"
+              "window.CSV_SUPABASE_PUBLISHABLE_KEY = " + json.dumps(publishable_key) + ";\n"
           )
+          Path("web/config.js").write_text(config, encoding="utf-8")
           PY
       - uses: actions/configure-pages@v5
         with:
