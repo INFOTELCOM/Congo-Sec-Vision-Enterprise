@@ -37,3 +37,16 @@ automatically copied by this schema.
 
 The schema has already been created in the Supabase project and verified there.
 `schema.sql` is an idempotent reference snapshot for review and future environments.
+
+
+## AI analysis and CVE synchronization (backend branch 0.4)
+
+- Each authorized endpoint enrollment creates a logical `CSVA-AI-<asset>` assignment.
+- The first endpoint analysis is queued after enrollment; active endpoints are re-analysed no more often than every 15 minutes on heartbeat.
+- The SOC console exposes the per-machine agent list and individual report history, including log signals, inventory, CVE candidates and remediation advice.
+- The LLM layer uses an OpenAI-compatible `/chat/completions` endpoint. Configure `LLM_BASE_URL`, `LLM_MODEL`, and (when required) `LLM_API_KEY` as backend secrets. No key belongs in the browser or mobile app. Without a provider, deterministic local rules remain active.
+- NVD checks run periodically (default 24 hours) in rotating batches (default 25 software records). Set `NVD_API_KEY` to use the higher NVD request rate. Manual sync remains available to administrators.
+- CVE keyword results are candidates. CPE and version-range matches are surfaced as stronger technical matches, not proof of exposure; vendor advisories, product editions and backported fixes must still be checked.
+- Recommendations are advisory only. No patch or remote command is executed automatically.
+
+Environment variables are documented in `.env.example`. The periodic worker runs in the FastAPI process; deploy a single API worker unless a distributed scheduler/lock is introduced, to avoid duplicate scheduled scans.
