@@ -1,40 +1,24 @@
 # Déploiement GitHub — Congo Sec Vision Enterprise
 
-## 1. Dépôt
+## 1. Console web (GitHub Pages)
+Le workflow `.github/workflows/pages.yml` publie le dossier `web/`.
+Dans **Settings → Pages**, choisir **GitHub Actions** comme source de publication.
+Créer la variable Actions `API_BASE_URL` avec l'URL HTTPS publique de l'API (ex. `https://soc-api.example.com`). Ne pas utiliser l'adresse privée du laboratoire VMware.
 
-Le dépôt cible est `INFOTELCOM/Congo-Sec-Vision-Enterprise`, branche `main`.
+GitHub Pages ne fournit que l'hébergement statique. L'API FastAPI, la base de données et les agents doivent fonctionner sur un serveur séparé.
 
-Le dépôt a été créé vide. Avant d'activer les workflows, importer le code complet de l'archive GitHub Ready 0.5.0 à la racine du dépôt. Les workflows ne peuvent pas publier une application dont les sources ne sont pas présentes.
+## 2. API cloud
+Utiliser `deploy/cloud/docker-compose.yml` avec un VPS Linux, un nom DNS et les ports 80/443 accessibles. Configurer les variables/secrets sur le serveur. Vérifier la persistance des volumes et les sauvegardes. Ne pas publier le port applicatif directement sur Internet ; Caddy doit terminer TLS et relayer vers l'API.
 
-## 2. Site Web
+Le fichier cloud est un modèle à vérifier et adapter à l'environnement réel avant mise en production. Ne pas copier les secrets dans GitHub.
 
-GitHub Pages héberge uniquement les fichiers statiques. Une fois le dossier Web et le workflow Pages importés :
-- ouvrir Settings → Pages ;
-- choisir GitHub Actions ;
-- attendre une exécution réussie dans Actions.
+## 3. Android
+Le workflow `.github/workflows/android.yml` compile un APK de debug et le conserve comme artifact Actions. Télécharger l'artifact depuis l'exécution du workflow. Un APK release signé demande une clé privée stockée dans GitHub Actions Secrets (non incluse).
 
-URL Pages attendue : `https://infotelcom.github.io/Congo-Sec-Vision-Enterprise/`.
-
-Le certificat HTTPS de Pages couvre ce site. Il ne couvre pas l'API.
-
-## 3. API et données SOC
-
-Déployer le conteneur FastAPI sur un VPS ou une plateforme compatible Docker. Utiliser Caddy ou un reverse proxy équivalent pour obtenir HTTPS. Configurer la base et les volumes persistants. Ne pas utiliser GitHub Pages comme serveur API.
-
-## 4. Android
-
-Après import du projet Android et du workflow correspondant, lancer le workflow Android dans Actions. Vérifier que le build aboutit et publier l'APK comme artefact ou GitHub Release. L'APK doit pointer vers l'URL HTTPS réelle de l'API.
-
-## 5. Variables et secrets
-
-Les noms exacts des variables doivent être vérifiés dans les fichiers de configuration importés. Ne pas créer de valeurs fictives. Ne jamais committer de fichier `.env` réel, de mot de passe, de clé API ou de certificat privé.
-
-## 6. Contrôles avant mise en production
-
-- Tests backend réussis.
-- API joignable uniquement via HTTPS.
-- Authentification et rôles vérifiés.
-- Données persistantes et sauvegardes vérifiées.
-- Agent Windows/Linux enrôlé avec un secret individuel.
-- Site Web et Android connectés à la même API.
-- APK installé et testé sur un appareil réel.
+## 4. Vérifications obligatoires
+- Confirmer `/api/health` depuis l'extérieur via HTTPS.
+- Configurer `API_BASE_URL` avec la même API.
+- Vérifier les règles CORS et les origines autorisées.
+- Tester connexion, actifs, événements, incidents et export.
+- Vérifier les journaux et la restauration des sauvegardes.
+- Ne pas exposer un SOC de laboratoire sans authentification individuelle, contrôle d'accès, durcissement et revue de sécurité.
