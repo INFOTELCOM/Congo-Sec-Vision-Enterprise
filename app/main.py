@@ -1,4 +1,4 @@
-import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio
+import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio, contextvars
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +8,9 @@ from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
-ADMIN = os.getenv("ADMIN_TOKEN", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
+_internal_task = contextvars.ContextVar("csv_internal_task", default=False)
 ENROLL = os.getenv("AGENT_ENROLLMENT_TOKEN", "")
 NVD_API_KEY = os.getenv("NVD_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
@@ -72,10 +74,8 @@ def init():
         for col, ddl in {"software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''","match_confidence":"TEXT DEFAULT 'candidate'","cve_url":"TEXT DEFAULT ''"}.items():
             if col not in vuln_cols: c.execute("ALTER TABLE vulnerabilities ADD COLUMN "+col+" "+ddl)
         c.execute("CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
-if not ADMIN or not ENROLL:
-    raise RuntimeError("ADMIN_TOKEN and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
-if ADMIN == ENROLL:
-    raise RuntimeError("ADMIN_TOKEN and AGENT_ENROLLMENT_TOKEN must be different")
+if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY or not ENROLL:
+    raise RuntimeError("SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
 init()
 
 app = FastAPI(title="Congo Sec Vision API", version="0.3.1")
@@ -94,7 +94,32 @@ def bearer(value):
     if not value or not value.startswith("Bearer "): return None
     return value[7:]
 def require_admin(auth):
-    if bearer(auth) != ADMIN: raise HTTPException(401, "Invalid administrator token")
+    if _internal_task.get():
+        return "system"
+    token = bearer(auth)
+    if not token:
+        raise HTTPException(401, "Supabase session required")
+    req = urllib.request.Request(
+        SUPABASE_URL + "/auth/v1/user",
+        headers={"apikey": SUPABASE_PUBLISHABLE_KEY, "Authorization": "Bearer " + token},
+        method="GET"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as response:
+            user = json.loads(response.read())
+    except Exception:
+        raise HTTPException(401, "Invalid or expired Supabase session")
+    metadata = user.get("app_metadata") or {}
+    if metadata.get("role") != "admin":
+        raise HTTPException(403, "Administrator role required")
+    return str(user.get("email") or user.get("id") or "admin")
+
+def run_internal_ai(asset_id):
+    marker = _internal_task.set(True)
+    try:
+        analyze_asset_ai(asset_id, None)
+    finally:
+        _internal_task.reset(marker)
 def audit(action, target="", details="", actor="admin"):
     with conn() as c:
         c.execute("INSERT INTO audit_logs(actor,action,target,details,created_at) VALUES(?,?,?,?,?)",
@@ -149,7 +174,7 @@ async def enroll(request:Request,background_tasks: BackgroundTasks,authorization
         c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
-    background_tasks.add_task(analyze_asset_ai, aid, "Bearer "+ADMIN)
+    background_tasks.add_task(run_internal_ai, aid)
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
     return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True}
 @app.post("/api/agents/heartbeat")
