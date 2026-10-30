@@ -1,50 +1,55 @@
 # Congo Sec Vision Enterprise
 **INFOTELCOM — Plateforme SOC de laboratoire**  
-Version source : 0.5.0 (API 0.3.1 / Android 0.4.1)
+Version source : 0.5.1 (API 0.3.1 / Android 0.4.1)
 
-Congo Sec Vision Enterprise regroupe une API FastAPI, une console web, des agents Windows/Linux et une application Android native Java.
+API FastAPI, console web, agents Windows/Linux et application Android native Java.
 
-> **État du projet :** version de laboratoire. Ne pas exposer l’API directement sur Internet. L'authentification actuelle repose encore sur un jeton administrateur partagé ; MFA, SSO et RBAC effectif ne sont pas implémentés.
+> **État :** version de laboratoire. L'authentification repose sur un jeton administrateur partagé. MFA, SSO et RBAC effectif ne sont pas implémentés. Ne pas exposer l'API directement sur Internet.
 
-## Dépôt
-- `app/` : API FastAPI et interface servie par l'API.
-- `web/` : console web statique destinée à GitHub Pages.
-- `android/` : projet Android natif Java.
-- `agent/` : agent de collecte Windows/Linux.
-- `deploy/` : configurations laboratoire, cloud, HTTPS et déploiement des agents.
-- `tests/` : tests automatisés API.
+## Arborescence
+- `app/` : API FastAPI et interface web servie par l'API.
+- `web/` : console statique publiée sur GitHub Pages.
+- `android/` : application Android native Java.
+- `agent/` : agent de collecte.
+- `deploy/` : configurations HTTPS, cloud, AD et installation des agents.
+- `tests/` : tests automatisés.
+- `.github/workflows/` : tests, publication Pages, compilation APK et image Docker.
 
-## Lancer le laboratoire (Docker)
-1. Installer Docker Desktop (Windows) ou Docker Engine + Compose (Linux).
-2. Copier `.env.example` vers `.env` si le fichier modèle existe dans la livraison ; définir des secrets uniques et conserver `.env` hors Git.
-3. Depuis la racine, lancer `docker compose up -d --build`.
-4. Consulter les journaux avec `docker compose logs -f`.
-5. Vérifier `/api/health` sur l'adresse locale configurée.
+## Lancer le laboratoire
+Prérequis : Docker Desktop (Windows) ou Docker Engine + Compose (Linux).
 
-Ne pas utiliser `docker compose down -v` : cela supprimerait les volumes persistants.
+1. Copier `.env.example` vers `.env` et remplacer les deux jetons par des valeurs longues, uniques et différentes.
+2. Lancer `docker compose up -d --build`.
+3. Vérifier `http://127.0.0.1:8081/api/health`.
+4. Ouvrir `http://127.0.0.1:8081` et utiliser le jeton administrateur défini dans `.env`.
+
+La publication locale est liée à `127.0.0.1` par défaut. Pour un laboratoire VMware, définir explicitement `SOC_BIND_IP` dans `.env` avec l'adresse de l'interface privée appropriée. Ne pas utiliser `0.0.0.0` sans filtrage réseau. Ne jamais exécuter `docker compose down -v` : cela supprime les données persistantes.
 
 ## Console web GitHub Pages
-Le workflow **Deploy web to GitHub Pages** publie le contenu du dossier `web/`. Dans GitHub, ouvrir **Settings → Pages → Build and deployment**, puis sélectionner **GitHub Actions** comme source. La console statique nécessite une API accessible en HTTPS. Définir la variable de dépôt `API_BASE_URL` (Settings → Secrets and variables → Actions → Variables) avec l'URL HTTPS publique de l'API. Sans API configurée, l'interface ne peut pas interroger le SOC.
+Dans **Settings → Pages**, choisir **GitHub Actions** comme source. Le workflow publie le dossier `web/`. Définir la variable Actions `API_BASE_URL` avec l'URL HTTPS publique de l'API (ex. `https://api.example.org`). Sans cette API, Pages peut afficher les fichiers statiques, mais les données SOC ne seront pas accessibles.
 
-GitHub Pages héberge uniquement les fichiers statiques : il n'héberge ni FastAPI, ni base de données, ni agents.
+GitHub Pages n'héberge ni FastAPI, ni base de données, ni agents. Le workflow Pages doit être exécuté après activation de Pages.
 
-## APK Android
-Le workflow **Build Android APK** compile l'application avec JDK 17 et Android SDK. Le fichier APK de débogage est publié comme artifact GitHub Actions après compilation. La génération d'un APK release signé nécessite une clé de signature privée ; ne jamais committer cette clé ou ses mots de passe.
+## API cloud / VPS
+Un déploiement cloud est décrit dans [deploy/cloud/README.md](deploy/cloud/README.md). Il exige un VPS Linux, un nom de domaine dont le DNS pointe vers ce VPS, les ports TCP 80/443 ouverts, Docker Compose et des secrets configurés dans le fichier `.env` du serveur. Le workflow Docker publie une image GHCR lors d'une publication de version (tag `v*`). La configuration cloud utilise cette image et Caddy pour TLS.
 
-## Tests
+## Android APK
+Le workflow **Build Android APK** compile un APK debug et le publie comme artifact GitHub Actions (conservation 30 jours). Lancer manuellement depuis **Actions → Build Android APK → Run workflow** ou modifier un fichier sous `android/`. Ce n'est pas un APK release signé. Une signature de production nécessite une clé privée stockée dans les secrets GitHub, jamais dans le dépôt.
+
+## Tests locaux
 ```bash
 python -m pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
 
 ## Limites connues
-- SQLite : laboratoire ; prévoir PostgreSQL, sauvegardes et migrations pour une exploitation durable.
-- Jeton administrateur partagé : pas de MFA, SSO ni comptes individuels/RBAC complet.
+- SQLite convient au laboratoire ; PostgreSQL, sauvegardes et migrations sont à prévoir pour une exploitation durable.
+- Jeton administrateur partagé ; pas de MFA, SSO ni authentification individuelle/RBAC.
 - Les rôles d'équipe sont informatifs.
-- Les approbations de workflow n'exécutent aucune commande.
-- Les alertes/vulnérabilités sont des signaux à valider, pas des verdicts automatiques.
-- Les notifications push mobiles ne sont pas disponibles dans cette version.
-- Une revue de sécurité, des tests multi-OS, des tests de charge et un plan de reprise sont requis avant production.
+- Les approbations n'exécutent aucune commande.
+- Les correspondances NVD et constats de détection sont des signaux à valider, pas des preuves automatiques.
+- Pas de notifications push mobiles dans cette version.
+- Une revue de sécurité, des tests multi-OS/charge et un plan de reprise sont nécessaires avant production.
 
 ## Sécurité
-Ne publiez jamais `.env`, clés API, jetons, certificats privés, données de production ou sauvegardes. Toute collecte doit être autorisée par le propriétaire des systèmes.
+Ne committer jamais `.env`, jetons, clés API, certificats privés, données réelles ou sauvegardes. N'enrôler que des systèmes dont l'administration est autorisée.
