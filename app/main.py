@@ -1,10 +1,11 @@
-import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time
+import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
+from app.cve_engine import scan_product
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 ADMIN = os.getenv("ADMIN_TOKEN", "")
@@ -67,6 +68,10 @@ def init():
         """)
         cols={r["name"] for r in c.execute("PRAGMA table_info(events)").fetchall()}
         if "raw" not in cols: c.execute("ALTER TABLE events ADD COLUMN raw TEXT")
+        vuln_cols={r["name"] for r in c.execute("PRAGMA table_info(vulnerabilities)").fetchall()}
+        for col, ddl in {"software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''","match_confidence":"TEXT DEFAULT 'candidate'","cve_url":"TEXT DEFAULT ''"}.items():
+            if col not in vuln_cols: c.execute("ALTER TABLE vulnerabilities ADD COLUMN "+col+" "+ddl)
+        c.execute("CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
 if not ADMIN or not ENROLL:
     raise RuntimeError("ADMIN_TOKEN and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
 if ADMIN == ENROLL:
@@ -137,7 +142,7 @@ def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"
 def auth_check(authorization: str|None=Header(default=None)):
     require_admin(authorization); return {"authenticated":True}
 @app.post("/api/agents/enroll")
-async def enroll(request:Request,authorization:str|None=Header(default=None)):
+async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     if bearer(authorization)!=ENROLL: raise HTTPException(403,"Enrollment not authorized")
     aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
     with conn() as c:
@@ -229,41 +234,58 @@ def software(authorization:str|None=Header(default=None)):
         rows=c.execute("SELECT s.*,a.hostname FROM software s LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.name").fetchall()
     return [dict(r) for r in rows]
 
-def nvd_search(keyword):
-    params=urllib.parse.urlencode({"keywordSearch":keyword,"resultsPerPage":20})
-    url="https://services.nvd.nist.gov/rest/json/cves/2.0?"+params
-    req=urllib.request.Request(url,headers={"User-Agent":"CongoSecVision/0.2"})
-    if NVD_API_KEY: req.add_header("apiKey",NVD_API_KEY)
-    with urllib.request.urlopen(req,timeout=25) as r: return json.loads(r.read())
-@app.post("/api/cve/sync")
+def run_cve_sync(limit=25):
+    with conn() as c:
+        products=c.execute("SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='' ORDER BY name LIMIT ?",(max(1,min(int(limit),100)),)).fetchall()
+    checked=0; added=0; refreshed=0; matched=0; errors=[]
+    for idx,p in enumerate(products):
+        if idx: time.sleep(0.7 if NVD_API_KEY else 6.1)
+        try:
+            records=scan_product(p['name'],p['version'],p['vendor'],NVD_API_KEY)
+            checked+=1
+            for v in records:
+                with conn() as c:
+                    old=c.execute('SELECT id FROM vulnerabilities WHERE asset_id=? AND cve_id=?',(p['asset_id'],v['cve_id'])).fetchone()
+                    values=(v['severity'],v['title'],p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'])
+                    if old:
+                        c.execute("UPDATE vulnerabilities SET severity=?,title=?,software_name=?,software_version=?,vendor=?,match_confidence=?,cve_url=? WHERE id=?",values+(old['id'],)); refreshed+=1
+                    else:
+                        c.execute("INSERT INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at,software_name,software_version,vendor,match_confidence,cve_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (p['asset_id'],v['cve_id'],v['severity'],v['title'],'needs-validation','NVD CVE API',now(),p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'])); added+=1
+                if v['match_confidence']=='version-range-match': matched+=1
+        except Exception as exc: errors.append({'software':p['name'],'error':str(exc)[:220]})
+    with conn() as c:
+        total=c.execute("SELECT COUNT(DISTINCT name) n FROM software WHERE name!=''").fetchone()['n']
+        c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('last_cve_sync',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(now(),now()))
+    return {'software_checked':checked,'software_total':total,'candidate_records_added':added,'records_refreshed':refreshed,
+      'version_range_matches':matched,'errors':errors,'last_sync':now(),
+      'warning':'CPE/version range match is a candidate, not proof of exposure. Check vendor advisories, edition, backported fixes and host context.'}
+
+@app.post('/api/cve/sync')
 def cve_sync(authorization:str|None=Header(default=None)):
     require_admin(authorization)
-    with conn() as c: products=c.execute("SELECT DISTINCT name,version,asset_id FROM software WHERE name!='' LIMIT 5").fetchall()
-    checked=0; added=0; errors=[]
-    for idx,p in enumerate(products):
-        if idx:
-            time.sleep(0.7 if NVD_API_KEY else 6.0)
-        # NVD keyword matching is a candidate-discovery step, not proof of applicability.
-        query=str(p["name"])[:100]
-        try:
-            result=nvd_search(query); checked+=1
-            for item in result.get("vulnerabilities",[]):
-                cv=item.get("cve",{}); cve_id=cv.get("id","")
-                desc=next((d.get("value","") for d in cv.get("descriptions",[]) if d.get("lang")=="en"),"")
-                metrics=cv.get("metrics",{}); sev="unknown"
-                for metric in metrics.get("cvssMetricV31",[])+metrics.get("cvssMetricV30",[]):
-                    sev=metric.get("cvssData",{}).get("baseSeverity","unknown").lower(); break
-                title=(desc[:220] or "NVD candidate match")
-                with conn() as c:
-                    before=c.total_changes
-                    c.execute("INSERT OR IGNORE INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at) VALUES(?,?,?,?,?,?,?)",
-                              (p["asset_id"],cve_id,sev,title,"needs-validation","NVD CVE API",now()))
-                    if c.total_changes>before: added+=1
-        except Exception as e: errors.append({"software":query,"error":str(e)[:220]})
-    with conn() as c: remaining=max(0,c.execute("SELECT COUNT(DISTINCT name) n FROM software WHERE name!=''").fetchone()["n"]-checked)
-    return {"software_checked":checked,"candidate_records_added":added,"remaining_software_estimate":remaining,"errors":errors,
-            "warning":"NVD keyword matches are candidates only. Validate CPE, affected version ranges and vendor advisories before declaring a host vulnerable."}
+    result=run_cve_sync(int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
+    audit('cve.sync','NVD',json.dumps({k:result[k] for k in ('software_checked','candidate_records_added','records_refreshed','version_range_matches')}))
+    return result
 
+async def periodic_cve_worker():
+    interval=max(1,int(os.getenv('CVE_SYNC_INTERVAL_HOURS','24')))*3600
+    await asyncio.sleep(30)
+    while True:
+        try: await asyncio.to_thread(run_cve_sync,int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
+        except Exception as exc: audit('cve.sync.error','NVD',str(exc)[:500])
+        await asyncio.sleep(interval)
+
+@app.on_event('startup')
+async def start_periodic_cve_worker(): app.state.cve_task=asyncio.create_task(periodic_cve_worker())
+
+@app.on_event('shutdown')
+async def stop_periodic_cve_worker():
+    task=getattr(app.state,'cve_task',None)
+    if task:
+        task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
 @app.get("/api/topology")
 def topology(authorization:str|None=Header(default=None)):
     require_admin(authorization)
@@ -334,7 +356,7 @@ async def create_event(request:Request,authorization:str|None=Header(default=Non
     audit("event.create", d.get("asset_id",""), d.get("message",""))
     return {"created":True}
 @app.get("/api/config")
-def config(): return {"product":"Congo Sec Vision","version":"0.3.1","mode":"laboratory","cve_provider":"NVD","ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
+def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","24")),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
 
 
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
@@ -494,6 +516,8 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
     log_inputs=[{"message":e["message"],"source":e["category"] or "endpoint","created_at":e["created_at"]} for e in raw_events]
     report=analyze_logs(log_inputs)
     cve_advice=[{"cve_id":v["cve_id"],"severity":v["severity"],"title":v["title"],
+       "software_name":v["software_name"],"software_version":v["software_version"],"vendor":v["vendor"],
+       "match_confidence":v["match_confidence"],"cve_url":v["cve_url"],
        **cve_remediation_advice(v["cve_id"],v["severity"],"", "",v["title"])} for v in vuln_rows]
     llm_result=None
     if LLM_BASE_URL and LLM_MODEL and log_inputs:
@@ -510,7 +534,8 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
                 llm_result=json.loads(response.read()).get("choices",[{}])[0].get("message",{}).get("content")
         except Exception as exc: llm_result={"status":"fallback","reason":str(exc)[:180]}
     summary={"host":asset["hostname"],"platform":asset["platform"],"logs":report,
-      "software_inventory_count":len(software_rows),"cve_candidates_count":len(vuln_rows),
+      "software_inventory_count":len(software_rows),"software_inventory":[dict(x) for x in software_rows],
+      "cve_candidates_count":len(vuln_rows),
       "cve_remediation_advice":cve_advice,"llm_analysis":llm_result,
       "mode":"llm+rules" if llm_result else "local-rules",
       "warning":"Les CVE issues d'une recherche par nom restent des candidates. Confirmer CPE, version affectée et avis éditeur."}
