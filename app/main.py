@@ -237,8 +237,8 @@ def software(authorization:str|None=Header(default=None)):
 def run_cve_sync(limit=25):
     with conn() as c:
         settings=c.execute("SELECT value FROM system_settings WHERE key='cve_scan_offset'").fetchone()
-                offset=int(settings['value']) if settings else 0
-                products=c.execute("SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='' ORDER BY name LIMIT ? OFFSET ?",(max(1,min(int(limit),100)),offset)).fetchall()
+        offset=int(settings['value']) if settings else 0
+        products=c.execute("SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='' ORDER BY name LIMIT ? OFFSET ?",(max(1,min(int(limit),100)),offset)).fetchall()
     checked=0; added=0; refreshed=0; matched=0; errors=[]
     for idx,p in enumerate(products):
         if idx: time.sleep(0.7 if NVD_API_KEY else 6.1)
@@ -257,10 +257,10 @@ def run_cve_sync(limit=25):
                 if v['match_confidence']=='version-range-match': matched+=1
         except Exception as exc: errors.append({'software':p['name'],'error':str(exc)[:220]})
     with conn() as c:
-        total=c.execute("SELECT COUNT(DISTINCT name) n FROM software WHERE name!=''").fetchone()['n']
+        total=c.execute("SELECT COUNT(*) n FROM (SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='')").fetchone()['n']
         next_offset=0 if offset+len(products)>=total else offset+len(products)
-                c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('cve_scan_offset',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(str(next_offset),now()))
-                c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('last_cve_sync',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(now(),now()))
+        c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('cve_scan_offset',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(str(next_offset),now()))
+        c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('last_cve_sync',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(now(),now()))
     return {'software_checked':checked,'software_total':total,'candidate_records_added':added,'records_refreshed':refreshed,
       'version_range_matches':matched,'errors':errors,'last_sync':now(),
       'warning':'CPE/version range match is a candidate, not proof of exposure. Check vendor advisories, edition, backported fixes and host context.'}
