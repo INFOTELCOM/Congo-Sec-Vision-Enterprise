@@ -524,7 +524,7 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
        "match_confidence":v["match_confidence"],"cve_url":v["cve_url"],
        **cve_remediation_advice(v["cve_id"],v["severity"],"", "",v["title"])} for v in vuln_rows]
     llm_result=None
-    if LLM_BASE_URL and LLM_MODEL and log_inputs:
+    if LLM_BASE_URL and LLM_MODEL and (log_inputs or software_rows or vuln_rows):
         prompt=("Tu es un analyste SOC défensif. Analyse exclusivement les preuves fournies. N'invente pas de CVE, "
           "de version corrigée ou de compromission. Distingue faits et hypothèses. Propose des mesures non destructives. "
           "Réponds en français. Données: "+json.dumps({"host":asset["hostname"],"log_report":report,
@@ -539,6 +539,7 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
         except Exception as exc: llm_result={"status":"fallback","reason":str(exc)[:180]}
     summary={"host":asset["hostname"],"platform":asset["platform"],"logs":report,
       "software_inventory_count":len(software_rows),"software_inventory":[dict(x) for x in software_rows],
+      "timeline":sorted([{"timestamp":e["created_at"],"source":e["category"],"severity":e["severity"],"message":e["message"]} for e in raw_events],key=lambda x:x["timestamp"] or ""),
       "cve_candidates_count":len(vuln_rows),
       "cve_remediation_advice":cve_advice,"llm_analysis":llm_result,
       "mode":"llm+rules" if llm_result else "local-rules",
