@@ -24,9 +24,21 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "deb", "appimage", "msi", "nsis"],
+    "targets": [
+      "app",
+      "dmg",
+      "deb",
+      "appimage",
+      "msi",
+      "nsis"
+    ],
     "category": "Security",
     "shortDescription": "Console SOC Congo Sec Vision",
-    "longDescription": "Application desktop de supervision SOC Congo Sec Vision par INFOTELCOM."
+    "longDescription": "Application desktop de supervision SOC Congo Sec Vision par INFOTELCOM.",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ]
   }
 }
