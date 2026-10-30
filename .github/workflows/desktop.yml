@@ -28,6 +28,26 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Generate desktop icons from the approved emblem
+        run: |
+          python -m pip install --upgrade Pillow
+          python - <<'PY'
+          from PIL import Image
+          from pathlib import Path
+          source = Path("web/Emblème futuriste Congo Sec Vision.png")
+          if not source.is_file():
+              raise SystemExit(f"Approved emblem not found: {source}")
+          original = Image.open(source).convert("RGBA")
+          canvas = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+          original.thumbnail((480, 480), Image.Resampling.LANCZOS)
+          canvas.alpha_composite(original, ((512-original.width)//2, (512-original.height)//2))
+          out = Path("desktop/src-tauri/icons")
+          out.mkdir(parents=True, exist_ok=True)
+          canvas.save(out / "icon.png", optimize=True)
+          canvas.save(out / "icon.ico", format="ICO", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          canvas.save(out / "icon.icns", format="ICNS")
+          print("Generated Tauri icon.png, icon.ico and icon.icns from the approved source image.")
+          PY
       - uses: actions/setup-node@v4
         with:
           node-version: 20
