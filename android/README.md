@@ -1,4 +1,4 @@
-# Congo Sec Vision Mobile 0.4.0
+# Congo Sec Vision Mobile 0.4.1
 
 Application Android native Java connectée à l'API SOC 0.3.1.
 
