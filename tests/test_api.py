@@ -6,12 +6,20 @@ class ApiSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        os.environ["ADMIN_TOKEN"] = "unit-test-admin-token-unique"
+        os.environ["SUPABASE_URL"] = "https://unit-test.supabase.co"
+        os.environ["SUPABASE_PUBLISHABLE_KEY"] = "sb_publishable_unit_test"
         os.environ["AGENT_ENROLLMENT_TOKEN"] = "unit-test-enrollment-token-unique"
         os.environ["DATABASE_PATH"] = os.path.join(cls.tmp.name, "test.db")
         import sys
         sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
         from app.main import app
+        import app.main as api_module
+        from fastapi import HTTPException
+        def test_require_admin(auth):
+            if auth != "Bearer unit-test-admin-token-unique":
+                raise HTTPException(401, "Invalid test session")
+            return "unit-test-admin"
+        api_module.require_admin = test_require_admin
         cls.client = TestClient(app)
         cls.headers = {"Authorization": "Bearer unit-test-admin-token-unique"}
 
