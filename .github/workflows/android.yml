@@ -5,9 +5,10 @@ on:
     paths:
       - 'android/**'
       - '.github/workflows/android.yml'
+    tags: ['v*']
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -51,3 +52,15 @@ jobs:
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Prepare directly downloadable APK
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p release-assets
+          cp android/app/build/outputs/apk/debug/*.apk release-assets/Congo-Sec-Vision-Android.apk
+      - name: Publish APK to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/Congo-Sec-Vision-Android.apk
+          generate_release_notes: true
