@@ -1,0 +1,45 @@
+services:
+  api:
+    build: .
+    container_name: congo-sec-vision
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "10.2.2.1:8081:8080"
+    volumes:
+      - csvg_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [soc]
+
+  caddy:
+    image: caddy:2.10-alpine
+    container_name: congo-sec-vision-https
+    restart: unless-stopped
+    environment:
+      SOC_DOMAIN: ${SOC_DOMAIN:?Define SOC_DOMAIN dans .env avec un nom de domaine public}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [soc]
+
+networks:
+  soc:
+    driver: bridge
+volumes:
+  csvg_data:
+  caddy_data:
+  caddy_config:
