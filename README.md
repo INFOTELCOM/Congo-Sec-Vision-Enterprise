@@ -10,6 +10,7 @@ API FastAPI, console web, agents Windows/Linux et application Android native Jav
 - `app/` : API FastAPI et interface web servie par l'API.
 - `web/` : console statique publiée sur GitHub Pages.
 - `android/` : application Android native Java.
+- `desktop/` : application de bureau Tauri 2 (Windows, Linux, macOS).
 - `agent/` : agent de collecte.
 - `deploy/` : configurations HTTPS, cloud, AD et installation des agents.
 - `tests/` : tests automatisés.
@@ -32,6 +33,11 @@ GitHub Pages n'héberge ni FastAPI, ni base de données, ni agents. Le workflow 
 
 ## API cloud / VPS
 Un déploiement cloud est décrit dans [deploy/cloud/README.md](deploy/cloud/README.md). Il exige un VPS Linux, un nom de domaine dont le DNS pointe vers ce VPS, les ports TCP 80/443 ouverts, Docker Compose et des secrets configurés dans le fichier `.env` du serveur. Le workflow Docker publie une image GHCR lors d'une publication de version (tag `v*`). La configuration cloud utilise cette image et Caddy pour TLS.
+
+## Application Desktop
+Le projet Tauri 2 et le workflow `.github/workflows/desktop.yml` préparent des installateurs Windows (MSI/EXE), Linux (DEB/AppImage, utilisables sur Ubuntu et Kali selon les dépendances système) et macOS (DMG). Lancer le workflow depuis **Actions → Build desktop applications**. Les fichiers sont publiés comme artefacts de build pendant 30 jours. Les premières compilations doivent être validées sur chaque OS ; les binaires ne sont pas encore signés pour distribution publique.
+
+L'application nécessite les variables GitHub `SUPABASE_URL` et `SUPABASE_PUBLISHABLE_KEY`. Pour les fonctions SOC, `API_BASE_URL` doit pointer vers un backend FastAPI HTTPS opérationnel.
 
 ## Android APK
 Le workflow **Build Android APK** compile un APK debug et le publie comme artifact GitHub Actions (conservation 30 jours). Lancer manuellement depuis **Actions → Build Android APK → Run workflow** ou modifier un fichier sous `android/`. Ce n'est pas un APK release signé. Une signature de production nécessite une clé privée stockée dans les secrets GitHub, jamais dans le dépôt.
