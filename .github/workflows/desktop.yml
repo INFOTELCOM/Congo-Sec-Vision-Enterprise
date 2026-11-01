@@ -105,11 +105,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-final
-          find release-assets -type f -iname '*.msi' -exec cp '{}' release-final/Congo-Sec-Vision-Windows.msi \\;
-          find release-assets -type f -iname '*.exe' -exec cp '{}' release-final/Congo-Sec-Vision-Windows.exe \\;
-          find release-assets -type f -iname '*.deb' -exec cp '{}' release-final/Congo-Sec-Vision-Linux.deb \\;
-          find release-assets -type f -iname '*.AppImage' -exec cp '{}' release-final/Congo-Sec-Vision-Linux.AppImage \\;
-          find release-assets -type f -iname '*.dmg' -exec cp '{}' release-final/Congo-Sec-Vision-macOS.dmg \\;
+          find release-assets -type f -iname '*.msi' -exec cp '{}' release-final/Congo-Sec-Vision-Windows.msi \;
+          find release-assets -type f -iname '*.exe' -exec cp '{}' release-final/Congo-Sec-Vision-Windows.exe \;
+          find release-assets -type f -iname '*.deb' -exec cp '{}' release-final/Congo-Sec-Vision-Linux.deb \;
+          find release-assets -type f -iname '*.AppImage' -exec cp '{}' release-final/Congo-Sec-Vision-Linux.AppImage \;
+          find release-assets -type f -iname '*.dmg' -exec cp '{}' release-final/Congo-Sec-Vision-macOS.dmg \;
           ls -lah release-final
       - name: Publish desktop installers to GitHub Release
         uses: softprops/action-gh-release@v2
