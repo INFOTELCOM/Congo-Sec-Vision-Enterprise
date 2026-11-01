@@ -32,7 +32,7 @@
       "msi",
       "nsis"
     ],
-    "category": "Security",
+    "category": "Utilities",
     "shortDescription": "Console SOC Congo Sec Vision",
     "longDescription": "Application desktop de supervision SOC Congo Sec Vision par INFOTELCOM.",
     "icon": [
