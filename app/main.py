@@ -161,6 +161,7 @@ def asset_json(a, online=None):
 
 @app.get("/")
 def index(): return FileResponse("app/static/index.html")
+@app.get("/health")
 @app.get("/api/health")
 def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"0.3.1","time":now()}
 @app.post("/api/auth/check")
