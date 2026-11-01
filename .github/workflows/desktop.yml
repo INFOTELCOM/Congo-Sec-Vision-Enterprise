@@ -3,10 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - 'desktop/**'
-      - 'web/**'
-      - '.github/workflows/desktop.yml'
+    tags: ['v*']
 permissions:
   contents: write
 jobs:
@@ -104,13 +101,18 @@ jobs:
           path: release-assets
           pattern: congo-sec-vision-*
           merge-multiple: true
+      - name: Prepare stable direct-download filenames
+        shell: bash
+        run: |
+          mkdir -p release-final
+          find release-assets -type f -iname '*.msi' -exec cp '{}' release-final/Congo-Sec-Vision-Windows.msi \;
+          find release-assets -type f -iname '*.exe' -exec cp '{}' release-final/Congo-Sec-Vision-Windows.exe \;
+          find release-assets -type f -iname '*.deb' -exec cp '{}' release-final/Congo-Sec-Vision-Linux.deb \;
+          find release-assets -type f -iname '*.AppImage' -exec cp '{}' release-final/Congo-Sec-Vision-Linux.AppImage \;
+          find release-assets -type f -iname '*.dmg' -exec cp '{}' release-final/Congo-Sec-Vision-macOS.dmg \;
+          ls -lah release-final
       - name: Publish desktop installers to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            release-assets/**/*.msi
-            release-assets/**/*.exe
-            release-assets/**/*.deb
-            release-assets/**/*.AppImage
-            release-assets/**/*.dmg
+          files: release-final/*
           generate_release_notes: true
