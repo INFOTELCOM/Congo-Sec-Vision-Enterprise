@@ -30,10 +30,11 @@ android {
 
     buildTypes {
         release {
-            if (!releaseStoreFile || !releaseStorePassword || !releaseKeyAlias || !releaseKeyPassword) {
-                throw new GradleException('Production signing secrets are missing. Configure ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD in GitHub Actions secrets.')
+            // CI may assemble debug variants without production signing secrets.
+            // The release workflow validates secrets before requesting assembleRelease.
+            if (releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword) {
+                signingConfig signingConfigs.release
             }
-            signingConfig signingConfigs.release
             minifyEnabled false
         }
     }
