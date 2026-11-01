@@ -79,15 +79,19 @@ if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY or not ENROLL:
 init()
 
 app = FastAPI(title="Congo Sec Vision API", version="0.3.1")
-_allowed_origins = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "").split(",") if x.strip()]
-if _allowed_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=_allowed_origins,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
+_default_origins = ["https://infotelcom.github.io"]
+_allowed_origins = [
+    x.strip()
+    for x in os.getenv("ALLOWED_ORIGINS", ",".join(_default_origins)).split(",")
+    if x.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 def bearer(value):
