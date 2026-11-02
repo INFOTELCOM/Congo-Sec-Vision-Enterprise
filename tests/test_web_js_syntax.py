@@ -21,7 +21,7 @@ class InlineJavaScriptSyntaxTests(unittest.TestCase):
                 continue
             source = html_file.read_text(encoding="utf-8")
             scripts = re.findall(
-                r"<script\\b(?![^>]*\\bsrc=)[^>]*>(.*?)</script\\s*>",
+                r"<script\b(?![^>]*\bsrc=)[^>]*>(.*?)</script\s*>",
                 source,
                 flags=re.IGNORECASE | re.DOTALL,
             )
