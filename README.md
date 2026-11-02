@@ -59,3 +59,35 @@ python -m unittest discover -s tests -v
 
 ## Sécurité
 Ne committer jamais `.env`, jetons, clés API, certificats privés, données réelles ou sauvegardes. N'enrôler que des systèmes dont l'administration est autorisée.
+
+
+## Activer la surveillance réelle des endpoints
+
+La console ne reçoit des métriques que lorsqu'un agent est lancé sur chaque machine autorisée. Le backend doit être en ligne et la variable serveur `AGENT_ENROLLMENT_TOKEN` doit correspondre au jeton fourni lors du premier enrôlement.
+
+### Windows (PowerShell)
+
+Depuis le dépôt cloné sur la machine à surveiller :
+
+```powershell
+py -m pip install -r agent/requirements.txt
+$server = "https://congo-sec-vision-enterprise.onrender.com"
+$enrollment = Read-Host "Jeton d'enrôlement configuré côté serveur"
+py agent/agent.py --server $server --enrollment-token $enrollment --interval 60
+```
+
+Laisser le processus tourner. L'agent envoie un inventaire puis un heartbeat toutes les 60 secondes. Le jeton propre à l'agent est conservé dans `%PROGRAMDATA%\\CongoSecVision\\agent-token.json`, ce qui évite de créer un nouvel actif à chaque redémarrage. Exécuter PowerShell en administrateur pour une collecte plus complète des journaux système et logiciels.
+
+### Linux (Debian/Ubuntu)
+
+```bash
+python3 -m pip install -r agent/requirements.txt
+sudo install -d -m 700 /var/lib/congo-sec-vision
+sudo python3 agent/agent.py --server https://congo-sec-vision-enterprise.onrender.com --enrollment-token "JETON_D_ENROLEMENT" --interval 60
+```
+
+Le jeton agent est conservé dans `/var/lib/congo-sec-vision/agent-token.json` avec des permissions restrictives. Pour une surveillance continue, exécuter l'agent comme service systemd après validation du premier lancement.
+
+### Vérification
+
+Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale** et cliquer sur **Actualiser**. La machine doit apparaître avec son hostname, son OS, ses adresses IP et ses métriques. Le statut « En ligne » dépend d'un heartbeat reçu dans les 3 dernières minutes. Les événements collectés apparaissent dans **Menaces & événements**. N'enrôler que des machines que vous êtes autorisé à administrer.
