@@ -61,20 +61,54 @@ def collect():
 def post(url,payload,token=None):
     req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={"Content-Type":"application/json",**({"Authorization":"Bearer "+token} if token else {})},method="POST")
     with urllib.request.urlopen(req,timeout=45) as r: return json.loads(r.read().decode())
+def default_token_file():
+    if platform.system()=="Windows":
+        root=os.environ.get("PROGRAMDATA",r"C:\\ProgramData")
+        return os.path.join(root,"CongoSecVision","agent-token.json")
+    return "/var/lib/congo-sec-vision/agent-token.json"
+def load_agent_token(path):
+    try:
+        with open(path,"r",encoding="utf-8") as f: return json.load(f).get("agent_token")
+    except (OSError,ValueError,AttributeError): return None
+def save_agent_token(path,token):
+    os.makedirs(os.path.dirname(os.path.abspath(path)),exist_ok=True)
+    temp=path+".tmp"
+    with open(temp,"w",encoding="utf-8") as f: json.dump({"agent_token":token},f)
+    os.replace(temp,path)
+    if platform.system()!="Windows":
+        os.chmod(path,0o600)
 def main():
-    p=argparse.ArgumentParser();p.add_argument("--server",required=True);p.add_argument("--enrollment-token",required=True);p.add_argument("--interval",type=int,default=60);a=p.parse_args()
-    base=a.server.rstrip("/"); token=None
+    p=argparse.ArgumentParser(description="Congo Sec Vision endpoint monitoring agent")
+    p.add_argument("--server",required=True)
+    p.add_argument("--enrollment-token",default=os.environ.get("CSV_ENROLLMENT_TOKEN"))
+    p.add_argument("--token-file",default=default_token_file())
+    p.add_argument("--interval",type=int,default=60)
+    a=p.parse_args()
+    base=a.server.rstrip("/"); token=load_agent_token(a.token_file)
     from urllib.parse import urlparse
     parsed=urlparse(base)
     if parsed.scheme != "https" and parsed.hostname not in ("localhost","127.0.0.1","::1"):
         raise SystemExit("HTTPS obligatoire pour tout serveur distant ; HTTP est autorisé uniquement en laboratoire local.")
+    if not token and not a.enrollment_token:
+        raise SystemExit("Premier enrôlement : fournir --enrollment-token ou CSV_ENROLLMENT_TOKEN.")
     while True:
         try:
             data=collect()
             if not token:
-                result=post(base+"/api/agents/enroll",data,a.enrollment_token);token=result["agent_token"];print("Enrolled asset",result["asset_id"])
+                result=post(base+"/api/agents/enroll",data,a.enrollment_token)
+                token=result["agent_token"];save_agent_token(a.token_file,token)
+                print("Enrolled asset",result["asset_id"],flush=True)
             else:
-                result=post(base+"/api/agents/heartbeat",data,token);print("Heartbeat",data["hostname"],"logs",result.get("logs_received",0))
-        except Exception as e: print("Agent error:",e)
+                try:
+                    result=post(base+"/api/agents/heartbeat",data,token)
+                    print("Heartbeat",data["hostname"],"logs",result.get("logs_received",0),flush=True)
+                except urllib.error.HTTPError as e:
+                    if e.code==401 and a.enrollment_token:
+                        token=None
+                        try: os.remove(a.token_file)
+                        except OSError: pass
+                        print("Agent token rejected; will re-enroll on next cycle.",flush=True)
+                    else: raise
+        except Exception as e: print("Agent error:",e,flush=True)
         time.sleep(max(30,a.interval))
 if __name__=="__main__": main()
