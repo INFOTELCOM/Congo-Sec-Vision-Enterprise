@@ -1,7 +1,7 @@
 {
   "name": "congo-sec-vision-desktop",
   "private": true,
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Application desktop Congo Sec Vision",
   "scripts": {
     "tauri": "tauri"
