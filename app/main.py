@@ -113,10 +113,9 @@ def require_admin(auth):
             user = json.loads(response.read())
     except Exception:
         raise HTTPException(401, "Invalid or expired Supabase session")
-    metadata = user.get("app_metadata") or {}
-    if metadata.get("role") != "admin":
-        raise HTTPException(403, "Administrator role required")
-    return str(user.get("email") or user.get("id") or "admin")
+    # Any valid Supabase account may use the connected SOC API.
+    # Privileged role checks should be added to admin-only operations separately.
+    return str(user.get("email") or user.get("id") or "user")
 
 def run_internal_ai(asset_id):
     marker = _internal_task.set(True)
