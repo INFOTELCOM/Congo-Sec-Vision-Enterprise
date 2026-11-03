@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: congo-sec-vision-api
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: congo-sec-vision-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /data/congo_sec_vision.db
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: AGENT_ENROLLMENT_TOKEN
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://infotelcom.github.io
+      - key: PYTHONUNBUFFERED
+        value: "1"
