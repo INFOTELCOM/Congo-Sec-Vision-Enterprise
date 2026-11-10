@@ -4,6 +4,7 @@ import ipaddress
 import platform
 import socket
 import subprocess
+import shutil
 
 
 def validate_network(cidr):
@@ -38,6 +39,8 @@ def _probe(ip):
 
 def discover_network(cidr, workers=32):
     network = validate_network(cidr)
+    if not shutil.which("ping"):
+        raise RuntimeError("La commande ping est absente du serveur ; installez iputils-ping puis redémarrez l’API.")
     hosts = list(network.hosts()) if network.num_addresses > 2 else list(network)
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(max(1, workers), 32)) as pool:
         results = list(pool.map(_probe, hosts))
