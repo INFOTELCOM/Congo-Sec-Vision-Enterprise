@@ -96,3 +96,10 @@ Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale*
 ## Découverte réseau autorisée (première brique SOC)
 
 L'API expose une découverte ICMP ponctuelle et authentifiée : `POST /api/network/discovery` avec `{"cidr":"192.168.50.0/24"}`. Seuls les réseaux privés sont acceptés et chaque scan est limité à 256 adresses. Les rôles `admin` et `analyst` peuvent lancer un scan ; les résultats sont consultables via `GET /api/network/discovery`. Cette fonction ne déploie aucun agent, ne contourne aucun pare-feu et ne transforme pas un hôte découvert en actif enrôlé. Les machines qui bloquent ICMP peuvent ne pas apparaître. Utiliser uniquement sur un réseau dont l'administration est autorisée.
+
+
+## Surveillance automatique du réseau depuis les agents
+
+Les agents d'extrémité détectent les interfaces IPv4 actives à chaque cycle de collecte et calculent eux-mêmes leurs sous-réseaux privés : aucun CIDR ni aucune adresse IP fixe ne doit être configuré. Lorsqu'un nouveau sous-réseau apparaît, l'agent lance une découverte ICMP bornée (maximum 256 adresses par sous-réseau) et transmet les hôtes joignables à l'API. Le scan est limité à une exécution par sous-réseau et par agent toutes les 10 minutes ; un changement de sous-réseau déclenche une découverte du nouveau réseau. Les observations sont consultables via `GET /api/network/discovery`.
+
+**Limites de sécurité et de couverture :** seuls les hôtes répondant au ping sont détectés ; les réseaux privés plus grands que 256 adresses sont ignorés pour le moment. La découverte d'un équipement ne donne pas accès à son inventaire logiciel : l'analyse CVE détaillée d'un poste nécessite que l'agent y soit installé et enrôlé, ou qu'une méthode d'inventaire authentifiée et autorisée soit configurée pour cet équipement. Aucun agent n'est déployé à distance et aucune correction n'est appliquée automatiquement.
