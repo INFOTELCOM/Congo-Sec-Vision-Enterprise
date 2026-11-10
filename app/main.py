@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
+from app.network_discovery import discover_network, validate_network
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -75,6 +76,11 @@ def init():
         for col, ddl in {"software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''","match_confidence":"TEXT DEFAULT 'candidate'","cve_url":"TEXT DEFAULT ''"}.items():
             if col not in vuln_cols: c.execute("ALTER TABLE vulnerabilities ADD COLUMN "+col+" "+ddl)
         c.execute("CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
+        c.execute("""CREATE TABLE IF NOT EXISTS network_discoveries(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, cidr TEXT NOT NULL, ip_address TEXT NOT NULL,
+          hostname TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'reachable',
+          source TEXT NOT NULL DEFAULT 'icmp', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+          UNIQUE(cidr,ip_address))""")
 if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY or not ENROLL:
     raise RuntimeError("SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
 init()
