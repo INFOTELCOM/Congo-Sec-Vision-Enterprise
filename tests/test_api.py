@@ -84,6 +84,63 @@ class ApiSmokeTests(unittest.TestCase):
         created = self.client.post("/api/incidents", headers=self.responder_headers, json={"title":"Responder test","severity":"low"})
         self.assertEqual(created.status_code, 200)
 
+    def test_authorized_private_network_discovery(self):
+        import app.main as api_module
+        original = api_module.discover_network
+        api_module.discover_network = lambda cidr: [
+            {"ip_address": "192.168.50.10", "hostname": "lab-host"}
+        ]
+        try:
+            response = self.client.post(
+                "/api/network/discovery",
+                headers=self.analyst_headers,
+                json={"cidr": "192.168.50.0/24"}
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["hosts_reachable"], 1)
+            self.assertEqual(response.json()["hosts_scanned"], 254)
+            saved = self.client.get("/api/network/discovery", headers=self.headers)
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved.json()[0]["ip_address"], "192.168.50.10")
+            blocked = self.client.post(
+                "/api/network/discovery",
+                headers=self.viewer_headers,
+                json={"cidr": "192.168.50.0/24"}
+            )
+            self.assertEqual(blocked.status_code, 403)
+            invalid = self.client.post(
+                "/api/network/discovery",
+                headers=self.headers,
+                json={"cidr": "8.8.8.0/24"}
+            )
+            self.assertEqual(invalid.status_code, 400)
+            ipv6 = self.client.post(
+                "/api/network/discovery",
+                headers=self.analyst_headers,
+                json={"cidr": "fd00:50::/120"}
+            )
+            self.assertEqual(ipv6.status_code, 200)
+            self.assertEqual(ipv6.json()["hosts_scanned"], 255)
+        finally:
+            api_module.discover_network = original
+
+    def test_agent_inventory_persists_automatic_lan_observations(self):
+        import app.main as api_module
+        api_module.asset_inventory({
+            "hostname": "endpoint-lan-test",
+            "platform": "Linux",
+            "ip_addresses": [{"address": "192.168.50.20"}],
+            "interfaces": [{"address": "192.168.50.20", "netmask": "255.255.255.0"}],
+            "software": [],
+            "network_discoveries": [
+                {"cidr": "192.168.50.0/24", "ip_address": "192.168.50.30", "hostname": "lan-device"}
+            ]
+        })
+        rows = self.client.get("/api/network/discovery", headers=self.headers).json()
+        observed = [x for x in rows if x["ip_address"] == "192.168.50.30"]
+        self.assertTrue(observed)
+        self.assertEqual(observed[0]["source"], "agent-icmp")
+
     def test_audit_and_team(self):
         member = self.client.post("/api/team", headers=self.headers, json={"username":"analyst1","display_name":"Analyst One","role":"analyst"})
         self.assertEqual(member.status_code, 200)
