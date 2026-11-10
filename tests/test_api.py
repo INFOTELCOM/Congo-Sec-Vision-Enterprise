@@ -98,6 +98,7 @@ class ApiSmokeTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["hosts_reachable"], 1)
+            self.assertEqual(response.json()["hosts_scanned"], 254)
             saved = self.client.get("/api/network/discovery", headers=self.headers)
             self.assertEqual(saved.status_code, 200)
             self.assertEqual(saved.json()[0]["ip_address"], "192.168.50.10")
@@ -113,6 +114,13 @@ class ApiSmokeTests(unittest.TestCase):
                 json={"cidr": "8.8.8.0/24"}
             )
             self.assertEqual(invalid.status_code, 400)
+            ipv6 = self.client.post(
+                "/api/network/discovery",
+                headers=self.analyst_headers,
+                json={"cidr": "fd00:50::/120"}
+            )
+            self.assertEqual(ipv6.status_code, 200)
+            self.assertEqual(ipv6.json()["hosts_scanned"], 255)
         finally:
             api_module.discover_network = original
 
