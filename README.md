@@ -4,7 +4,7 @@ Version source : 0.5.1 (API 0.3.1 / Android 0.4.1)
 
 API FastAPI, console web, agents Windows/Linux et application Android native Java.
 
-> **État :** version de laboratoire. L'authentification repose sur un jeton administrateur partagé. MFA, SSO et RBAC effectif ne sont pas implémentés. Ne pas exposer l'API directement sur Internet.
+> **État :** version de laboratoire. La console utilise Supabase Auth avec des comptes individuels et un contrôle d'accès API par rôles (`admin`, `analyst`, `incident_responder`, `viewer`). Le MFA et le SSO ne sont pas activés par défaut. Ne pas exposer l'API directement sur Internet.
 
 ## Arborescence
 - `app/` : API FastAPI et interface web servie par l'API.
@@ -22,7 +22,7 @@ Prérequis : Docker Desktop (Windows) ou Docker Engine + Compose (Linux).
 1. Copier `.env.example` vers `.env` et remplacer les deux jetons par des valeurs longues, uniques et différentes.
 2. Lancer `docker compose up -d --build`.
 3. Vérifier `http://127.0.0.1:8081/api/health`.
-4. Ouvrir `http://127.0.0.1:8081` et utiliser le jeton administrateur défini dans `.env`.
+4. Ouvrir `http://127.0.0.1:8081` et se connecter avec un compte Supabase existant. Attribuer `csv_role: admin` au compte administrateur dans **Authentication → Users → App Metadata**. Voir [la configuration Supabase Auth et RBAC](docs/SUPABASE-AUTH-RBAC.md).
 
 La publication locale est liée à `127.0.0.1` par défaut. Pour un laboratoire VMware, définir explicitement `SOC_BIND_IP` dans `.env` avec l'adresse de l'interface privée appropriée. Ne pas utiliser `0.0.0.0` sans filtrage réseau. Ne jamais exécuter `docker compose down -v` : cela supprime les données persistantes.
 
@@ -50,8 +50,8 @@ python -m unittest discover -s tests -v
 
 ## Limites connues
 - SQLite convient au laboratoire ; PostgreSQL, sauvegardes et migrations sont à prévoir pour une exploitation durable.
-- Jeton administrateur partagé ; pas de MFA, SSO ni authentification individuelle/RBAC.
-- Les rôles d'équipe sont informatifs.
+- Authentification individuelle via Supabase Auth et contrôle d'accès API par rôles ; MFA et SSO non activés par défaut.
+- Les rôles de la table d'équipe restent un registre d'affichage ; les permissions effectives sont pilotées par `app_metadata.csv_role` dans Supabase.
 - Les approbations n'exécutent aucune commande.
 - Les correspondances NVD et constats de détection sont des signaux à valider, pas des preuves automatiques.
 - Pas de notifications push mobiles dans cette version.
