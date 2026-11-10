@@ -283,14 +283,14 @@ def auth_check(authorization: str|None=Header(default=None)):
 @app.post("/api/agents/enroll")
 async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     if bearer(authorization)!=ENROLL: raise HTTPException(403,"Enrollment not authorized")
-    aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
+    data=await request.json(); aid=asset_inventory(data); token=secrets.token_urlsafe(36)
     with conn() as c:
         c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
     background_tasks.add_task(run_internal_ai, aid)
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
-    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True,"network_hosts_discovered":min(len((await request.json()).get("network_discoveries",[])),256)}
+    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True,"network_hosts_discovered":min(len(data.get("network_discoveries",[])),256)}
 @app.post("/api/agents/heartbeat")
 async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     aid=require_agent(authorization); data=await request.json(); asset_inventory(data,aid)
