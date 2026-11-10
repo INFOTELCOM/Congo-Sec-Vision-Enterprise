@@ -91,3 +91,8 @@ Le jeton agent est conservé dans `/var/lib/congo-sec-vision/agent-token.json` a
 ### Vérification
 
 Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale** et cliquer sur **Actualiser**. La machine doit apparaître avec son hostname, son OS, ses adresses IP et ses métriques. Le statut « En ligne » dépend d'un heartbeat reçu dans les 3 dernières minutes. Les événements collectés apparaissent dans **Menaces & événements**. N'enrôler que des machines que vous êtes autorisé à administrer.
+
+
+## Découverte réseau autorisée (première brique SOC)
+
+L'API expose une découverte ICMP ponctuelle et authentifiée : `POST /api/network/discovery` avec `{"cidr":"192.168.50.0/24"}`. Seuls les réseaux privés sont acceptés et chaque scan est limité à 256 adresses. Les rôles `admin` et `analyst` peuvent lancer un scan ; les résultats sont consultables via `GET /api/network/discovery`. Cette fonction ne déploie aucun agent, ne contourne aucun pare-feu et ne transforme pas un hôte découvert en actif enrôlé. Les machines qui bloquent ICMP peuvent ne pas apparaître. Utiliser uniquement sur un réseau dont l'administration est autorisée.
