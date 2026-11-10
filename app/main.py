@@ -417,7 +417,10 @@ async def network_discovery(request: Request, authorization: str|None=Header(def
         network = validate_network(cidr)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    results = await asyncio.to_thread(discover_network, str(network))
+    try:
+        results = await asyncio.to_thread(discover_network, str(network))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
     stamp = now()
     with conn() as c:
         for item in results:
@@ -426,7 +429,7 @@ async def network_discovery(request: Request, authorization: str|None=Header(def
               hostname=excluded.hostname,status=excluded.status,source=excluded.source,last_seen=excluded.last_seen""",
               (str(network), item["ip_address"], item.get("hostname",""), "reachable", "icmp", stamp, stamp))
     audit("network.discovery", str(network), json.dumps({"hosts_reachable":len(results)}))
-    return {"cidr":str(network),"hosts_scanned":network.num_addresses,
+    return {"cidr":str(network),"hosts_scanned":(network.num_addresses - 2 if network.version == 4 and network.prefixlen < 31 else network.num_addresses),
       "hosts_reachable":len(results),"hosts":results,
       "limitation":"Découverte ICMP ponctuelle uniquement. Les hôtes qui bloquent le ping peuvent être absents. Aucun agent n'est installé et aucun équipement n'est enrôlé automatiquement."}
 
