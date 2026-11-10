@@ -140,6 +140,8 @@ def allowed_roles_for(method, path):
     if method == "POST":
         if path == "/api/auth/check":
             return all_roles
+        if path == "/api/network/discovery":
+            return {"admin", "analyst"}
         if path in {
             "/api/cve/sync", "/api/ai/analyze",
             "/api/diagnostics/inventory", "/api/events"
@@ -400,6 +402,35 @@ async def stop_periodic_cve_worker():
         task.cancel()
         try: await task
         except asyncio.CancelledError: pass
+@app.post("/api/network/discovery")
+async def network_discovery(request: Request, authorization: str|None=Header(default=None)):
+    require_authenticated(authorization)
+    data = await request.json()
+    cidr = str(data.get("cidr", "")).strip()
+    try:
+        network = validate_network(cidr)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    results = await asyncio.to_thread(discover_network, str(network))
+    stamp = now()
+    with conn() as c:
+        for item in results:
+            c.execute("""INSERT INTO network_discoveries(cidr,ip_address,hostname,status,source,first_seen,last_seen)
+              VALUES(?,?,?,?,?,?,?) ON CONFLICT(cidr,ip_address) DO UPDATE SET
+              hostname=excluded.hostname,status=excluded.status,source=excluded.source,last_seen=excluded.last_seen""",
+              (str(network), item["ip_address"], item.get("hostname",""), "reachable", "icmp", stamp, stamp))
+    audit("network.discovery", str(network), json.dumps({"hosts_reachable":len(results)}))
+    return {"cidr":str(network),"hosts_scanned":network.num_addresses,
+      "hosts_reachable":len(results),"hosts":results,
+      "limitation":"Découverte ICMP ponctuelle uniquement. Les hôtes qui bloquent le ping peuvent être absents. Aucun agent n'est installé et aucun équipement n'est enrôlé automatiquement."}
+
+@app.get("/api/network/discovery")
+def list_network_discoveries(authorization: str|None=Header(default=None)):
+    require_authenticated(authorization)
+    with conn() as c:
+        rows=c.execute("SELECT * FROM network_discoveries ORDER BY last_seen DESC LIMIT 1000").fetchall()
+    return [dict(row) for row in rows]
+
 @app.get("/api/topology")
 def topology(authorization:str|None=Header(default=None)):
     require_authenticated(authorization)
