@@ -241,6 +241,27 @@ def asset_inventory(data, asset_id=None):
             c.execute("INSERT INTO software(asset_id,name,version,vendor,collected_at) VALUES(?,?,?,?,?)",
                       (asset_id,str(s.get("name",""))[:255],str(s.get("version",""))[:100],
                        str(s.get("vendor",""))[:255],stamp))
+    # Observations sent by an enrolled endpoint agent after detecting its current LAN.
+    observations = data.get("network_discoveries", [])
+    if isinstance(observations, list) and observations:
+        stamp = now()
+        with conn() as c:
+            for item in observations[:256]:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    network = validate_network(str(item.get("cidr", "")))
+                    address = ipaddress.ip_address(str(item.get("ip_address", "")))
+                    if address not in network:
+                        continue
+                except ValueError:
+                    continue
+                c.execute("""INSERT INTO network_discoveries(cidr,ip_address,hostname,status,source,first_seen,last_seen)
+                  VALUES(?,?,?,?,?,?,?) ON CONFLICT(cidr,ip_address) DO UPDATE SET
+                  hostname=CASE WHEN excluded.hostname<>'' THEN excluded.hostname ELSE network_discoveries.hostname END,
+                  status='reachable',source='agent-icmp',last_seen=excluded.last_seen""",
+                  (str(network), str(address), str(item.get("hostname", ""))[:255],
+                   "reachable", "agent-icmp", stamp, stamp))
     return asset_id
 
 def asset_json(a, online=None):
@@ -269,7 +290,7 @@ async def enroll(request:Request,background_tasks: BackgroundTasks,authorization
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
     background_tasks.add_task(run_internal_ai, aid)
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
-    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True}
+    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True,"network_hosts_discovered":min(len((await request.json()).get("network_discoveries",[])),256)}
 @app.post("/api/agents/heartbeat")
 async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     aid=require_agent(authorization); data=await request.json(); asset_inventory(data,aid)
@@ -282,7 +303,7 @@ async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorizat
     if due: background_tasks.add_task(run_internal_ai, aid)
     for entry in data.get("logs",[])[:250]:
         ingest_log(aid,entry)
-    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due}
+    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due,"network_hosts_discovered":min(len(data.get("network_discoveries",[])),256)}
 
 def ingest_log(asset_id, entry):
     message=str(entry.get("message",""))[:4000]
