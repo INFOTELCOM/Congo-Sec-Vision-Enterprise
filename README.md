@@ -98,6 +98,10 @@ Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale*
 L'API expose une découverte ICMP ponctuelle et authentifiée : `POST /api/network/discovery` avec `{"cidr":"192.168.50.0/24"}`. Seuls les réseaux privés sont acceptés et chaque scan est limité à 256 adresses. Les rôles `admin` et `analyst` peuvent lancer un scan ; les résultats sont consultables via `GET /api/network/discovery`. Cette fonction ne déploie aucun agent, ne contourne aucun pare-feu et ne transforme pas un hôte découvert en actif enrôlé. Les machines qui bloquent ICMP peuvent ne pas apparaître. Utiliser uniquement sur un réseau dont l'administration est autorisée.
 
 
+## Utiliser les deux méthodes depuis la console
+
+Dans la rubrique **Découverte réseau**, les utilisateurs peuvent consulter les observations remontées automatiquement par les agents. Les rôles `admin` et `analyst` disposent également du formulaire de découverte manuelle : saisir un réseau privé au format CIDR (par exemple `192.168.1.0/24`) puis lancer le scan. Les résultats des deux méthodes sont réunis dans le même tableau et identifiés par leur source. Les utilisateurs en lecture seule peuvent consulter les résultats, mais ne peuvent pas déclencher de scan manuel.
+
 ## Surveillance automatique du réseau depuis les agents
 
 Les agents d'extrémité détectent les interfaces IPv4 actives à chaque cycle de collecte et calculent eux-mêmes leurs sous-réseaux privés : aucun CIDR ni aucune adresse IP fixe ne doit être configuré. Lorsqu'un nouveau sous-réseau apparaît, l'agent lance une découverte ICMP bornée (maximum 256 adresses par sous-réseau) et transmet les hôtes joignables à l'API. Le scan est limité à une exécution par sous-réseau et par agent toutes les 10 minutes ; un changement de sous-réseau déclenche une découverte du nouveau réseau. Les observations sont consultables via `GET /api/network/discovery`.
