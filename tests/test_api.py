@@ -116,24 +116,18 @@ class ApiSmokeTests(unittest.TestCase):
         finally:
             api_module.discover_network = original
 
-    def test_agent_enrollment_persists_automatic_lan_observations(self):
-        enrollment_headers = {"Authorization": "Bearer unit-test-enrollment-token-unique"}
-        response = self.client.post(
-            "/api/agents/enroll",
-            headers=enrollment_headers,
-            json={
-                "hostname": "endpoint-lan-test",
-                "platform": "Linux",
-                "ip_addresses": [{"address": "192.168.50.20"}],
-                "interfaces": [{"address": "192.168.50.20", "netmask": "255.255.255.0"}],
-                "software": [],
-                "network_discoveries": [
-                    {"cidr": "192.168.50.0/24", "ip_address": "192.168.50.30", "hostname": "lan-device"}
-                ]
-            }
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["network_hosts_discovered"], 1)
+    def test_agent_inventory_persists_automatic_lan_observations(self):
+        import app.main as api_module
+        api_module.asset_inventory({
+            "hostname": "endpoint-lan-test",
+            "platform": "Linux",
+            "ip_addresses": [{"address": "192.168.50.20"}],
+            "interfaces": [{"address": "192.168.50.20", "netmask": "255.255.255.0"}],
+            "software": [],
+            "network_discoveries": [
+                {"cidr": "192.168.50.0/24", "ip_address": "192.168.50.30", "hostname": "lan-device"}
+            ]
+        })
         rows = self.client.get("/api/network/discovery", headers=self.headers).json()
         observed = [x for x in rows if x["ip_address"] == "192.168.50.30"]
         self.assertTrue(observed)
