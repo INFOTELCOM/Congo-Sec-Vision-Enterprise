@@ -2,7 +2,7 @@ import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, s
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
@@ -11,6 +11,7 @@ DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
 _internal_task = contextvars.ContextVar("csv_internal_task", default=False)
+_current_user = contextvars.ContextVar("csv_current_user", default=None)
 ENROLL = os.getenv("AGENT_ENROLLMENT_TOKEN", "")
 NVD_API_KEY = os.getenv("NVD_API_KEY", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
@@ -97,9 +98,10 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 def bearer(value):
     if not value or not value.startswith("Bearer "): return None
     return value[7:]
-def require_admin(auth):
-    if _internal_task.get():
-        return "system"
+
+SOC_ROLES = {"admin", "analyst", "incident_responder", "viewer"}
+
+def verify_supabase_user(auth):
     token = bearer(auth)
     if not token:
         raise HTTPException(401, "Supabase session required")
@@ -111,10 +113,86 @@ def require_admin(auth):
     try:
         with urllib.request.urlopen(req, timeout=8) as response:
             user = json.loads(response.read())
-    except Exception:
+    except urllib.error.HTTPError:
         raise HTTPException(401, "Invalid or expired Supabase session")
-    # Any valid Supabase account may use the connected SOC API.
-    # Privileged role checks should be added to admin-only operations separately.
+    except Exception:
+        raise HTTPException(503, "Supabase Auth is temporarily unreachable")
+    if not isinstance(user, dict) or not user.get("id"):
+        raise HTTPException(401, "Invalid Supabase user session")
+    return user
+
+def allowed_roles_for(method, path):
+    all_roles = {"admin", "analyst", "incident_responder", "viewer"}
+    if method == "GET":
+        if path in {"/api/team"}:
+            return {"admin"}
+        if path in {"/api/audit", "/api/security/status", "/api/reports/export.csv"}:
+            return {"admin", "analyst"}
+        if path == "/api/approvals":
+            return {"admin", "analyst", "incident_responder"}
+        if path == "/api/workflows":
+            return {"admin", "analyst"}
+        if path == "/api/ai/agents":
+            return {"admin", "analyst"}
+        if re.fullmatch(r"/api/ai/agents/[^/]+/reports", path):
+            return {"admin", "analyst", "incident_responder"}
+        return all_roles
+    if method == "POST":
+        if path == "/api/auth/check":
+            return all_roles
+        if path in {
+            "/api/cve/sync", "/api/ai/analyze",
+            "/api/diagnostics/inventory", "/api/events"
+        } or re.fullmatch(r"/api/ai/agents/[^/]+/analyze", path):
+            return {"admin", "analyst"}
+        if path in {"/api/incidents", "/api/incidents/from-findings", "/api/approvals"}:
+            return {"admin", "analyst", "incident_responder"}
+        if path in {"/api/team", "/api/workflows"} or re.fullmatch(r"/api/approvals/\d+/review", path):
+            return {"admin"}
+        return {"admin"}
+    if method == "PATCH" and re.fullmatch(r"/api/incidents/\d+", path):
+        return {"admin", "analyst", "incident_responder"}
+    return {"admin"}
+
+@app.middleware("http")
+async def enforce_soc_role_access(request: Request, call_next):
+    path = request.url.path
+    if (
+        not path.startswith("/api/")
+        or request.method == "OPTIONS"
+        or path in {
+            "/api/health", "/api/config",
+            "/api/agents/enroll", "/api/agents/heartbeat"
+        }
+    ):
+        return await call_next(request)
+
+    try:
+        user = verify_supabase_user(request.headers.get("authorization"))
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    app_metadata = user.get("app_metadata") or {}
+    role = str(app_metadata.get("csv_role") or app_metadata.get("role") or "viewer").strip().lower()
+    if role not in SOC_ROLES:
+        return JSONResponse(status_code=403, content={"detail": "Aucun rôle Congo Sec Vision valide n'est attribué à ce compte."})
+
+    permitted = allowed_roles_for(request.method, path)
+    if role not in permitted:
+        return JSONResponse(status_code=403, content={"detail": "Accès refusé pour le rôle " + role + "."})
+
+    marker = _current_user.set(user)
+    try:
+        return await call_next(request)
+    finally:
+        _current_user.reset(marker)
+
+def require_authenticated(auth):
+    if _internal_task.get():
+        return "system"
+    user = _current_user.get()
+    if user is None:
+        user = verify_supabase_user(auth)
     return str(user.get("email") or user.get("id") or "user")
 
 def run_internal_ai(asset_id):
@@ -123,7 +201,10 @@ def run_internal_ai(asset_id):
         analyze_asset_ai(asset_id, None)
     finally:
         _internal_task.reset(marker)
-def audit(action, target="", details="", actor="admin"):
+def audit(action, target="", details="", actor=None):
+    if actor is None:
+        user = _current_user.get()
+        actor = str((user or {}).get("email") or (user or {}).get("id") or "system")
     with conn() as c:
         c.execute("INSERT INTO audit_logs(actor,action,target,details,created_at) VALUES(?,?,?,?,?)",
                   (actor, action[:120], str(target)[:255], str(details)[:2000], now()))
@@ -169,7 +250,7 @@ def index(): return FileResponse("app/static/index.html")
 def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"0.3.1","time":now()}
 @app.post("/api/auth/check")
 def auth_check(authorization: str|None=Header(default=None)):
-    require_admin(authorization); return {"authenticated":True}
+    require_authenticated(authorization); return {"authenticated":True}
 @app.post("/api/agents/enroll")
 async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     if bearer(authorization)!=ENROLL: raise HTTPException(403,"Enrollment not authorized")
@@ -229,7 +310,7 @@ def detect_log_patterns(asset_id,message,source):
 
 @app.get("/api/overview")
 def overview(authorization:str|None=Header(default=None)):
-    require_admin(authorization); cutoff=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
+    require_authenticated(authorization); cutoff=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
     with conn() as c:
         assets=c.execute("SELECT * FROM assets ORDER BY last_seen DESC").fetchall()
         events=c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8").fetchall()
@@ -242,23 +323,23 @@ def overview(authorization:str|None=Header(default=None)):
       "assets":[asset_json(a,a["last_seen"]>=cutoff) for a in assets]}
 @app.get("/api/assets")
 def assets(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM assets ORDER BY last_seen DESC").fetchall()
     cutoff=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
     return [asset_json(a,a["last_seen"]>=cutoff) for a in rows]
 @app.get("/api/events")
 def events(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 200").fetchall()
     return [dict(r) for r in rows]
 @app.get("/api/vulnerabilities")
 def vulnerabilities(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM vulnerabilities ORDER BY created_at DESC").fetchall()
     return [dict(r) for r in rows]
 @app.get("/api/software")
 def software(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c:
         rows=c.execute("SELECT s.*,a.hostname FROM software s LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.name").fetchall()
     return [dict(r) for r in rows]
@@ -296,7 +377,7 @@ def run_cve_sync(limit=25):
 
 @app.post('/api/cve/sync')
 def cve_sync(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     result=run_cve_sync(int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
     audit('cve.sync','NVD',json.dumps({k:result[k] for k in ('software_checked','candidate_records_added','records_refreshed','version_range_matches')}))
     return result
@@ -321,7 +402,7 @@ async def stop_periodic_cve_worker():
         except asyncio.CancelledError: pass
 @app.get("/api/topology")
 def topology(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM assets").fetchall()
     nodes=[]; edges=[]; networks={}
     for a in rows:
@@ -340,12 +421,12 @@ def topology(authorization:str|None=Header(default=None)):
 
 @app.get("/api/ai/findings")
 def ai_findings(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM log_findings ORDER BY id DESC LIMIT 250").fetchall()
     return [dict(r) for r in rows]
 @app.post("/api/ai/analyze")
 def ai_analyze(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c:
         findings=c.execute("SELECT * FROM log_findings ORDER BY id DESC LIMIT 100").fetchall()
         events=c.execute("SELECT e.*,a.hostname FROM events e LEFT JOIN assets a ON a.id=e.asset_id WHERE e.category='endpoint-log' ORDER BY e.id DESC LIMIT 150").fetchall()
@@ -370,7 +451,7 @@ def ai_analyze(authorization:str|None=Header(default=None)):
 
 @app.post("/api/diagnostics/inventory")
 def inventory_diagnostic(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c:
         rows=c.execute("SELECT * FROM assets").fetchall()
         for a in rows:
@@ -382,7 +463,7 @@ def inventory_diagnostic(authorization:str|None=Header(default=None)):
     return {"checked_assets":len(rows),"message":"Inventory checks completed from endpoint telemetry."}
 @app.post("/api/events")
 async def create_event(request:Request,authorization:str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_authenticated(authorization); d=await request.json()
     with conn() as c:
         c.execute("INSERT INTO events(asset_id,severity,category,message,created_at) VALUES(?,?,?,?,?)",
                   (d.get("asset_id"),d.get("severity","info"),d.get("category","manual"),d.get("message",""),now()))
@@ -395,13 +476,13 @@ def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"lab
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
 @app.get("/api/incidents")
 def list_incidents(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM incidents ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, updated_at DESC").fetchall()
     return [dict(r) for r in rows]
 
 @app.post("/api/incidents")
 async def create_incident(request: Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_authenticated(authorization); d=await request.json()
     title=str(d.get("title","")).strip()
     if not title: raise HTTPException(400,"Incident title required")
     severity=str(d.get("severity","medium")).lower()
@@ -417,7 +498,7 @@ async def create_incident(request: Request, authorization: str|None=Header(defau
 
 @app.patch("/api/incidents/{incident_id}")
 async def update_incident(incident_id:int, request:Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_authenticated(authorization); d=await request.json()
     allowed={"status","severity","assignee","description","title"}
     changes={k:v for k,v in d.items() if k in allowed}
     if not changes: raise HTTPException(400,"No supported fields")
@@ -434,7 +515,7 @@ async def update_incident(incident_id:int, request:Request, authorization: str|N
 
 @app.post("/api/incidents/from-findings")
 def incidents_from_findings(authorization: str|None=Header(default=None)):
-    require_admin(authorization); created=0
+    require_authenticated(authorization); created=0
     with conn() as c:
         rows=c.execute("""SELECT f.* FROM log_findings f WHERE NOT EXISTS
           (SELECT 1 FROM incidents i WHERE i.source='finding:'||f.id) ORDER BY f.id DESC LIMIT 100""").fetchall()
@@ -447,19 +528,19 @@ def incidents_from_findings(authorization: str|None=Header(default=None)):
 
 @app.get("/api/audit")
 def get_audit(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 500").fetchall()
     return [dict(r) for r in rows]
 
 @app.get("/api/team")
 def get_team(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT id,username,display_name,role,active,created_at FROM team_members ORDER BY id").fetchall()
     return [dict(r) for r in rows]
 
 @app.post("/api/team")
 async def add_team_member(request:Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_authenticated(authorization); d=await request.json()
     username=str(d.get("username","")).strip().lower(); display=str(d.get("display_name","")).strip()
     role=str(d.get("role","analyst"))
     if not username or not display: raise HTTPException(400,"Username and display name required")
@@ -472,13 +553,13 @@ async def add_team_member(request:Request, authorization: str|None=Header(defaul
 
 @app.get("/api/approvals")
 def get_approvals(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM approvals ORDER BY id DESC LIMIT 300").fetchall()
     return [dict(r) for r in rows]
 
 @app.post("/api/approvals")
 async def create_approval(request:Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_authenticated(authorization); d=await request.json()
     title=str(d.get("title","")).strip(); description=str(d.get("description","")).strip()
     if not title or not description: raise HTTPException(400,"Title and description required")
     with conn() as c:
@@ -489,7 +570,7 @@ async def create_approval(request:Request, authorization: str|None=Header(defaul
 
 @app.post("/api/approvals/{approval_id}/review")
 async def review_approval(approval_id:int, request:Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json(); decision=d.get("decision")
+    require_authenticated(authorization); d=await request.json(); decision=d.get("decision")
     if decision not in ("approved","rejected"): raise HTTPException(400,"Decision must be approved or rejected")
     with conn() as c:
         cur=c.execute("UPDATE approvals SET status=?,reviewed_by='admin',reviewed_at=? WHERE id=? AND status='pending'",
@@ -500,7 +581,7 @@ async def review_approval(approval_id:int, request:Request, authorization: str|N
 
 @app.get("/api/reports/export.csv")
 def export_csv(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     import csv, io
     with conn() as c: rows=c.execute("SELECT hostname,platform,ip_addresses,first_seen,last_seen FROM assets ORDER BY hostname").fetchall()
     buf=io.StringIO(); writer=csv.writer(buf); writer.writerow(["hostname","platform","ip_addresses","first_seen","last_seen"])
@@ -511,13 +592,13 @@ def export_csv(authorization: str|None=Header(default=None)):
 
 @app.get("/api/workflows")
 def get_workflows(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM workflows ORDER BY id DESC").fetchall()
     return [dict(r) for r in rows]
 
 @app.post("/api/workflows")
 async def create_workflow(request:Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_authenticated(authorization); d=await request.json()
     name=str(d.get("name","")).strip()
     if not name: raise HTTPException(400,"Workflow name required")
     with conn() as c:
@@ -529,7 +610,7 @@ async def create_workflow(request:Request, authorization: str|None=Header(defaul
 
 @app.get("/api/ai/agents")
 def list_ai_agents(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c:
         rows=c.execute("""SELECT g.*,a.hostname,a.platform,a.last_seen
           FROM ai_agents g JOIN assets a ON a.id=g.asset_id ORDER BY a.hostname""").fetchall()
@@ -537,7 +618,7 @@ def list_ai_agents(authorization: str|None=Header(default=None)):
 
 @app.post("/api/ai/agents/{asset_id}/analyze")
 def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c:
         asset=c.execute("SELECT * FROM assets WHERE id=?",(asset_id,)).fetchone()
         if not asset: raise HTTPException(404,"Asset not found")
@@ -585,14 +666,14 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
 
 @app.get("/api/ai/agents/{asset_id}/reports")
 def list_asset_ai_reports(asset_id: str, authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c:
         rows=c.execute("SELECT id,report_type,summary,events_reviewed,created_at FROM ai_reports WHERE asset_id=? ORDER BY id DESC LIMIT 30",(asset_id,)).fetchall()
     return [dict(x) for x in rows]
 
 @app.get("/api/reports/logs")
 def logs_report(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     with conn() as c:
         assets=c.execute("SELECT id,hostname,platform,last_seen FROM assets ORDER BY hostname").fetchall()
         events=c.execute("""SELECT e.*,a.hostname FROM events e LEFT JOIN assets a ON a.id=e.asset_id
@@ -608,5 +689,5 @@ def logs_report(authorization: str|None=Header(default=None)):
 
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_authenticated(authorization)
     return {"authentication":"Supabase Auth session with admin app_metadata role","database":"sqlite persistent","tls":"terminaison reverse-proxy requise en déploiement","mfa":"not-configured","rbac":"Supabase app_metadata admin role; granular roles not configured","remediation":"approval-only; no remote execution","agent_enrollment":"shared bootstrap token; rotate and protect","mode":"laboratory"}
