@@ -86,11 +86,14 @@ def _cpe_product_match(criteria: str, name: str, vendor: str) -> bool:
     cpe_vendor, cpe_product = parts[3], parts[4]
     if cpe_vendor in ("*", "-") or cpe_product in ("*", "-"):
         return False
-    wanted_vendor, wanted_product = _norm(cpe_vendor), _norm(cpe_product)
-    actual_vendor, actual_name = _norm(vendor), _norm(name)
-    # Product names may be distributed with a vendor prefix or suffix.
-    vendor_ok = not actual_vendor or wanted_vendor in actual_vendor or actual_vendor in wanted_vendor
-    product_ok = wanted_product == actual_name or wanted_product in actual_name or actual_name in wanted_product
+    actual_vendor = _norm(vendor)
+    actual_tokens = set(re.findall(r"[a-z0-9]+", str(name or "").lower()))
+    vendor_tokens = set(re.findall(r"[a-z0-9]+", cpe_vendor.replace("_", " ").lower()))
+    product_tokens = set(re.findall(r"[a-z0-9]+", cpe_product.replace("_", " ").lower()))
+    # Require all meaningful CPE product tokens to exist as complete inventory tokens.
+    # Fuzzy substring matching created too many false positives in the previous engine.
+    vendor_ok = not actual_vendor or _norm(cpe_vendor) == actual_vendor or _norm(cpe_vendor) in actual_vendor
+    product_ok = bool(product_tokens) and product_tokens.issubset(actual_tokens)
     return vendor_ok and product_ok
 
 
