@@ -177,6 +177,18 @@ def _extract_weaknesses(cve: dict[str, Any]) -> list[str]:
     return sorted(found)
 
 
+def _extract_ssvc(cve: dict[str, Any]) -> list[dict[str, Any]]:
+    """Preserve NVD SSVC v2.0.3 assessments, including decision-point options."""
+    rows = (cve.get("metrics") or {}).get("ssvcV203") or []
+    return [x for x in rows[:20] if isinstance(x, dict)]
+
+
+def _extract_affected(cve: dict[str, Any]) -> list[dict[str, Any]]:
+    """Preserve CVE Record Format affected-product declarations from NVD."""
+    rows = cve.get("affected") or []
+    return [x for x in rows[:200] if isinstance(x, dict)]
+
+
 def _extract_references(cve: dict[str, Any]) -> list[dict[str, Any]]:
     refs = []
     for item in cve.get("references") or []:
@@ -289,6 +301,7 @@ def scan_product(name: str, version: str, vendor: str, api_key: str = "",
             "last_modified": cve.get("lastModified"), "vuln_status": cve.get("vulnStatus"),
             "match_confidence": _applies(cve, name, vendor, version),
             "cwe_ids": _extract_weaknesses(cve), "cpe_matches": _extract_cpe(cve),
+            "affected": _extract_affected(cve), "ssvc": _extract_ssvc(cve),
             "references": _extract_references(cve),
             "epss_score": (epss.get(cve_id) or {}).get("score"),
             "epss_percentile": (epss.get(cve_id) or {}).get("percentile"),
