@@ -1027,6 +1027,7 @@ async def ingest_virtualbox_host_inventory(
               (vm_id, name, str(machine.get("state") or "unknown")[:80],
                json.dumps(metadata, ensure_ascii=False)[:12000], stamp))
             received += 1
+    audit("hypervisor.virtualbox.host_ingest", "virtualbox", f"{received} machine(s) reçue(s)", "windows-vboxmanage")
     return {"received": received, "provider": "virtualbox", "read_only": True, "timestamp": stamp}
 
 
