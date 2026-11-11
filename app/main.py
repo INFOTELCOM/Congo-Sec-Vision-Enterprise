@@ -1,4 +1,4 @@
-import os, json, secrets, hashlib, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio, contextvars
+import os, json, secrets, hashlib, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio, contextvars, threading
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -202,7 +202,7 @@ def auth_check(authorization: str|None=Header(default=None)):
     require_admin(authorization); return {"authenticated":True}
 @app.post("/api/agents/enroll")
 async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
-    if bearer(authorization)!=ENROLL: raise HTTPException(403,"Enrollment not authorized")
+    if not secrets.compare_digest(bearer(authorization) or "", ENROLL): raise HTTPException(403,"Enrollment not authorized")
     aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
     with conn() as c:
         c.execute("INSERT INTO agent_tokens VALUES(?,?)",(hashlib.sha256(token.encode("utf-8")).hexdigest(),aid))
@@ -398,7 +398,7 @@ def software(authorization:str|None=Header(default=None)):
         rows=c.execute("SELECT s.*,a.hostname FROM software s LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.name").fetchall()
     return [dict(r) for r in rows]
 
-def run_cve_sync(limit=25):
+def _run_cve_sync_locked(limit=25):
     with conn() as c:
         settings=c.execute("SELECT value FROM system_settings WHERE key='cve_scan_offset'").fetchone()
         offset=int(settings['value']) if settings else 0
@@ -470,10 +470,23 @@ def run_cve_sync(limit=25):
       'version_range_matches':matched,'errors':errors,'last_sync':now(),
       'warning':'Une correspondance CPE/version reste un candidat à valider, pas une preuve d’exposition. Vérifier l’édition, les correctifs rétroportés et l’avis éditeur.'}
 
+_CVE_SYNC_LOCK = threading.Lock()
+
+def run_cve_sync(limit=25):
+    """Prevent API-triggered and scheduled scans from racing over the same cursor."""
+    if not _CVE_SYNC_LOCK.acquire(blocking=False):
+        return {"busy": True, "message": "Une synchronisation CVE est déjà en cours."}
+    try:
+        return _run_cve_sync_locked(limit)
+    finally:
+        _CVE_SYNC_LOCK.release()
+
 @app.post('/api/cve/sync')
 def cve_sync(authorization:str|None=Header(default=None)):
     require_admin(authorization)
     result=run_cve_sync(int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
+    if result.get("busy"):
+        raise HTTPException(409, result["message"])
     audit('cve.sync','NVD',json.dumps({k:result[k] for k in ('software_checked','candidate_records_added','records_refreshed','version_range_matches')}))
     return result
 
