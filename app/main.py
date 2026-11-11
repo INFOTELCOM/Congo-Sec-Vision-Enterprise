@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
-from app.cve_engine import scan_product
+from app.cve_engine import (scan_product, search_nvd_catalog, get_nvd_cve, get_nvd_cve_history, search_nvd_cpes, search_nvd_cpe_matches)
 from app.authz import get_user_roles
 from app.hypervisors import HypervisorError, configured_providers, inventory as collect_hypervisor_inventory
 from app.hypervisor_lab import lab_inventory as get_hypervisor_lab_inventory
@@ -953,6 +953,138 @@ def supabase_soc_request(resource, method, authorization, payload=None):
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise HTTPException(502, "Réponse invalide de Supabase Data API") from None
+
+
+@app.get("/api/nvd/status")
+def nvd_status(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    return {
+        "configured": True,
+        "source": "NVD CVE API 2.0",
+        "api_key_configured": bool(NVD_API_KEY),
+        "rate_limit_mode": "api-key" if NVD_API_KEY else "conservative",
+        "features": ["CVE search", "CVE details", "CVE change history", "CPE dictionary", "CPE match criteria"],
+    }
+
+
+@app.get("/api/nvd/cves")
+def nvd_search(
+    q: str = "", cve_id: str = "", cpe_name: str = "", vuln_status: str = "",
+    has_kev: bool | None = None, page: int = 1, page_size: int = 50,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return search_nvd_catalog(
+            keyword=q, cve_id=cve_id, cpe_name=cpe_name, vuln_status=vuln_status,
+            has_kev=has_kev, page=page, page_size=page_size, api_key=NVD_API_KEY,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD a répondu HTTP {exc.code}; vérifie la limite de requêtes ou la clé API.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD est momentanément inaccessible depuis le serveur.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cves/{cve_id}/history")
+def nvd_history(
+    cve_id: str, page: int = 1, page_size: int = 20,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return get_nvd_cve_history(cve_id, page=page, page_size=page_size, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD History a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD History est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD History invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cves/{cve_id}")
+def nvd_detail(cve_id: str, authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    try:
+        return get_nvd_cve(cve_id, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cpes")
+def nvd_cpe_search(
+    q: str, page: int = 1, page_size: int = 50,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return search_nvd_cpes(q, page=page, page_size=page_size, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD CPE a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "Le dictionnaire NVD CPE est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD CPE invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cpe-matches")
+def nvd_cpe_match_search(
+    q: str, page: int = 1, page_size: int = 50,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return search_nvd_cpe_matches(q, page=page, page_size=page_size, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD CPE Match a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "Le catalogue NVD CPE Match est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD CPE Match invalide ou inattendue.") from None
+
+
+@app.get("/api/cve/intelligence/{cve_id}")
+def combined_cve_intelligence(cve_id: str, authorization: str | None = Header(default=None)):
+    """Combine NVD authority with optional OpenCVE context; failures remain source-specific."""
+    require_read(authorization)
+    try:
+        nvd = get_nvd_cve(cve_id, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD est momentanément inaccessible.") from None
+    result = {"cve_id": cve_id.upper(), "nvd": nvd, "opencve": None, "opencve_history": None,
+              "opencve_status": "not-configured", "opencve_message": ""}
+    if OPENCVE_API_TOKEN:
+        try:
+            result["opencve"] = get_opencve_cve(cve_id)
+            result["opencve_history"] = get_opencve_changes(cve_id, page=1, page_size=10)
+            result["opencve_status"] = "available"
+        except OpenCVEError as exc:
+            result["opencve_status"] = "unavailable"
+            result["opencve_message"] = str(exc)
+    return result
 
 
 @app.get("/api/opencve/status")
