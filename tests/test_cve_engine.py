@@ -84,6 +84,10 @@ class NvdPaginationTests(unittest.TestCase):
             "descriptions": [{"lang": "en", "value": "Example vulnerability"}],
             "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}]},
             "weaknesses": [{"description": [{"value": "CWE-79"}]}],
+            "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}],
+                        "ssvcV203": [{"source": "CISA-ADP", "ssvcData": {"role": "Coordinator",
+                          "version": "2.0.3", "options": [{"Exploitation": "active"}]}}]},
+            "affected": [{"vendor": "Acme", "product": "Widget", "versions": [{"version": "1.0", "status": "affected"}]}],
             "references": [{"url": "https://vendor.example/security", "tags": ["Vendor Advisory"]}],
             "configurations": [{"nodes": [{"cpeMatch": [{
                 "vulnerable": True, "criteria": "cpe:2.3:a:acme:widget:*:*:*:*:*:*:*:*",
@@ -96,6 +100,8 @@ class NvdPaginationTests(unittest.TestCase):
         self.assertEqual(row["match_confidence"], "version-range-match")
         self.assertIn("CWE-79", row["cwe_ids"])
         self.assertEqual(row["references"][0]["tags"], ["Vendor Advisory"])
+        self.assertEqual(row["ssvc"][0]["ssvcData"]["role"], "Coordinator")
+        self.assertEqual(row["affected"][0]["product"], "Widget")
 
 
 if __name__ == "__main__":
