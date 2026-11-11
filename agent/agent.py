@@ -1,4 +1,4 @@
-import argparse, json, os, platform, socket, time, urllib.request, subprocess, shutil
+import argparse, json, os, platform, socket, time, urllib.request, subprocess, shutil, ipaddress, concurrent.futures
 from datetime import datetime, timezone
 import psutil
 
@@ -12,6 +12,46 @@ def local_interfaces():
             if getattr(a.family,"name","")=="AF_INET" and not a.address.startswith("127."):
                 result.append({"interface":name,"address":a.address,"netmask":a.netmask})
     return result
+_network_scan_cache = {}
+
+def discover_connected_networks(force=False):
+    """Discover only bounded private LANs; throttle each subnet to one scan per 10 minutes."""
+    discovered = []
+    current_time = time.time()
+    networks = {}
+    for iface in local_interfaces():
+        try:
+            interface = ipaddress.ip_interface(f"{iface['address']}/{iface['netmask']}")
+            network = interface.network
+            if (not network.is_private or network.is_loopback or network.is_link_local
+                    or network.is_multicast or network.num_addresses > 256):
+                continue
+            networks[str(network)] = str(interface.ip)
+        except (ValueError, TypeError):
+            continue
+    for cidr, own_ip in networks.items():
+        if not force and current_time - _network_scan_cache.get(cidr, 0) < 600:
+            continue
+        _network_scan_cache[cidr] = current_time
+        hosts = [str(ip) for ip in ipaddress.ip_network(cidr).hosts() if str(ip) != own_ip]
+        def probe(ip):
+            command = ["ping", "-n", "1", "-w", "700", ip] if platform.system() == "Windows" else ["ping", "-c", "1", "-W", "1", ip]
+            try:
+                result = subprocess.run(command, capture_output=True, timeout=2, check=False)
+                if result.returncode:
+                    return None
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            try:
+                hostname = socket.gethostbyaddr(ip)[0]
+            except OSError:
+                hostname = ""
+            return {"ip_address": ip, "hostname": hostname, "cidr": cidr}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+            discovered.extend(item for item in pool.map(probe, hosts) if item)
+    return discovered
+
+
 def software_inventory():
     items=[]
     if platform.system()=="Windows":
@@ -83,7 +123,7 @@ def detect_virtualization():
     identity = (vendor + " " + model + " " + hypervisor).lower()
     indicators = ("vmware", "virtualbox", "virtual machine", "kvm", "qemu",
                   "xen", "hyper-v", "hyperv", "parallels", "bhyve", "amazon ec2",
-                  "google", "openstack")
+                  "google compute engine", "google cloud", "openstack")
     is_vm = bool(hypervisor) or any(term in identity for term in indicators)
     if hypervisor:
         provider = hypervisor
@@ -118,7 +158,8 @@ def collect():
       "platform_version":platform.version(),"architecture":platform.machine(),"processor":platform.processor(),
       "cpu_percent":psutil.cpu_percent(interval=1),"memory_percent":vm.percent,"disk_percent":disk.percent,
       "ip_addresses":[{"interface":x["interface"],"address":x["address"]} for x in local_interfaces()],
-      "interfaces":local_interfaces(),"software":software_inventory(),"logs":collect_logs(),
+      "interfaces":local_interfaces(),"network_discoveries":discover_connected_networks(),
+      "software":software_inventory(),"logs":collect_logs(),
       "virtualization":detect_virtualization(),"agent_version":"0.2.0","collected_at":datetime.now(timezone.utc).isoformat()}
 def post(url,payload,token=None):
     req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={"Content-Type":"application/json",**({"Authorization":"Bearer "+token} if token else {})},method="POST")
