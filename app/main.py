@@ -405,7 +405,10 @@ def run_cve_sync(limit=25):
         products=c.execute("SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='' ORDER BY name LIMIT ? OFFSET ?",(max(1,min(int(limit),100)),offset)).fetchall()
     checked=0; added=0; refreshed=0; matched=0; errors=[]
     for idx,p in enumerate(products):
-        if idx: time.sleep(max(0.0,float(os.getenv("CVE_SYNC_PRODUCT_INTERVAL_SECONDS", "0.7" if NVD_API_KEY else "6.1"))))
+        if idx:
+            configured_interval=os.getenv("CVE_SYNC_PRODUCT_INTERVAL_SECONDS", "").strip()
+            default_interval="0.7" if NVD_API_KEY else "6.1"
+            time.sleep(max(0.0,float(configured_interval or default_interval)))
         try:
             records=scan_product(p['name'],p['version'],p['vendor'],NVD_API_KEY)
             checked+=1
@@ -475,7 +478,7 @@ def cve_sync(authorization:str|None=Header(default=None)):
     return result
 
 async def periodic_cve_worker():
-    legacy_minutes = max(1, int(os.getenv("CVE_SYNC_INTERVAL_HOURS", "1"))) * 60
+    legacy_minutes = max(5, int(float(os.getenv("CVE_SYNC_INTERVAL_HOURS", "0.25")) * 60))
     interval_minutes = max(5, int(os.getenv("CVE_SYNC_INTERVAL_MINUTES", str(legacy_minutes))))
     interval = interval_minutes * 60
     await asyncio.sleep(30)
@@ -564,7 +567,7 @@ async def create_event(request:Request,authorization:str|None=Header(default=Non
     audit("event.create", d.get("asset_id",""), d.get("message",""))
     return {"created":True}
 @app.get("/api/config")
-def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"cve_sync_interval_minutes":max(5,int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",str(int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1"))*60)))),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
+def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"cve_sync_interval_minutes":max(5,int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",str(max(5,int(float(os.getenv("CVE_SYNC_INTERVAL_HOURS","0.25"))*60)))))),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
 
 
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
