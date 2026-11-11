@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
-from app.authz import is_admin_user
+from app.authz import get_user_roles
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -124,7 +124,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 def bearer(value):
     if not value or not value.startswith("Bearer "): return None
     return value[7:]
-def require_admin(auth):
+def require_roles(auth, allowed_roles):
     if _internal_task.get():
         return "system"
     token = bearer(auth)
@@ -140,11 +140,26 @@ def require_admin(auth):
             user = json.loads(response.read())
     except Exception:
         raise HTTPException(401, "Invalid or expired Supabase session")
-    # Privileged SOC endpoints require a server-controlled Supabase app_metadata role.
-    # user_metadata is deliberately ignored because users can edit it themselves.
-    if not is_admin_user(user):
-        raise HTTPException(403, "Administrator role required in Supabase app_metadata")
-    return str(user.get("email") or user.get("id") or "admin")
+    roles = get_user_roles(user)
+    if not roles.intersection(set(allowed_roles)):
+        raise HTTPException(403, "Insufficient Supabase app_metadata role")
+    return str(user.get("email") or user.get("id") or "user")
+
+
+def require_admin(auth):
+    return require_roles(auth, {"admin"})
+
+
+def require_read(auth):
+    return require_roles(auth, {"admin", "analyst", "viewer", "incident_responder"})
+
+
+def require_analyst(auth):
+    return require_roles(auth, {"admin", "analyst"})
+
+
+def require_incident_responder(auth):
+    return require_roles(auth, {"admin", "analyst", "incident_responder"})
 
 def run_internal_ai(asset_id):
     marker = _internal_task.set(True)
@@ -199,7 +214,7 @@ def index(): return FileResponse("app/static/index.html")
 def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"0.3.1","time":now()}
 @app.post("/api/auth/check")
 def auth_check(authorization: str|None=Header(default=None)):
-    require_admin(authorization); return {"authenticated":True}
+    require_read(authorization); return {"authenticated":True}
 @app.post("/api/agents/enroll")
 async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     if not secrets.compare_digest(bearer(authorization) or "", ENROLL): raise HTTPException(403,"Enrollment not authorized")
@@ -259,7 +274,7 @@ def detect_log_patterns(asset_id,message,source):
 
 @app.get("/api/overview")
 def overview(authorization:str|None=Header(default=None)):
-    require_admin(authorization); cutoff=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
+    require_read(authorization); cutoff=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
     with conn() as c:
         assets=c.execute("SELECT * FROM assets ORDER BY last_seen DESC").fetchall()
         events=c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 8").fetchall()
@@ -272,13 +287,13 @@ def overview(authorization:str|None=Header(default=None)):
       "assets":[asset_json(a,a["last_seen"]>=cutoff) for a in assets]}
 @app.get("/api/assets")
 def assets(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM assets ORDER BY last_seen DESC").fetchall()
     cutoff=(datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat()
     return [asset_json(a,a["last_seen"]>=cutoff) for a in rows]
 @app.get("/api/events")
 def events(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 200").fetchall()
     return [dict(r) for r in rows]
 @app.get("/api/vulnerabilities")
@@ -286,7 +301,7 @@ def vulnerabilities(severity: str|None=None, vendor: str|None=None, product: str
                     cwe: str|None=None, status: str|None=None, kev: bool|None=None,
                     min_cvss: float|None=None, min_epss: float|None=None, search: str|None=None,
                     authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     clauses=[]; params=[]
     if severity: clauses.append("lower(severity)=?"); params.append(severity.lower())
     if vendor: clauses.append("lower(vendor) LIKE ?"); params.append("%"+vendor.lower()+"%")
@@ -312,7 +327,7 @@ def vulnerabilities(severity: str|None=None, vendor: str|None=None, product: str
 
 @app.patch("/api/vulnerabilities/{vulnerability_id}")
 async def update_vulnerability(vulnerability_id: int, request: Request, authorization:str|None=Header(default=None)):
-    actor=require_admin(authorization); data=await request.json()
+    actor=require_analyst(authorization); data=await request.json()
     allowed={"open","needs-validation","under-analysis","risk-accepted","fixed","false-positive"}
     changes={}
     if "status" in data:
@@ -337,7 +352,7 @@ async def update_vulnerability(vulnerability_id: int, request: Request, authoriz
 
 @app.get("/api/cve/history")
 def cve_history(cve_id: str|None=None, authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c:
         if cve_id:
             rows=c.execute("SELECT * FROM cve_history WHERE cve_id=? ORDER BY id DESC LIMIT 500",(cve_id,)).fetchall()
@@ -347,13 +362,13 @@ def cve_history(cve_id: str|None=None, authorization:str|None=Header(default=Non
 
 @app.get("/api/cve/subscriptions")
 def list_cve_subscriptions(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM cve_subscriptions ORDER BY id DESC").fetchall()
     return [dict(r) for r in rows]
 
 @app.post("/api/cve/subscriptions")
 async def create_cve_subscription(request: Request, authorization:str|None=Header(default=None)):
-    actor=require_admin(authorization); data=await request.json()
+    actor=require_analyst(authorization); data=await request.json()
     vendor=str(data.get("vendor") or "").strip()[:255]
     product=str(data.get("product") or "").strip()[:255]
     asset_id=str(data.get("asset_id") or "").strip()[:80]
@@ -369,7 +384,7 @@ async def create_cve_subscription(request: Request, authorization:str|None=Heade
 
 @app.delete("/api/cve/subscriptions/{subscription_id}")
 def delete_cve_subscription(subscription_id:int, authorization:str|None=Header(default=None)):
-    actor=require_admin(authorization)
+    actor=require_analyst(authorization)
     with conn() as c:
         cur=c.execute("DELETE FROM cve_subscriptions WHERE id=?",(subscription_id,))
     if not cur.rowcount: raise HTTPException(404,"Subscription not found")
@@ -378,14 +393,14 @@ def delete_cve_subscription(subscription_id:int, authorization:str|None=Header(d
 
 @app.get("/api/cve/notifications")
 def list_cve_notifications(unread_only: bool=False, authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     sql="SELECT * FROM cve_notifications"+(" WHERE read_at IS NULL" if unread_only else "")+" ORDER BY id DESC LIMIT 500"
     with conn() as c: rows=c.execute(sql).fetchall()
     return [dict(r) for r in rows]
 
 @app.patch("/api/cve/notifications/{notification_id}")
 def mark_cve_notification_read(notification_id:int, authorization:str|None=Header(default=None)):
-    actor=require_admin(authorization)
+    actor=require_read(authorization)
     with conn() as c:
         cur=c.execute("UPDATE cve_notifications SET read_at=? WHERE id=?",(now(),notification_id))
     if not cur.rowcount: raise HTTPException(404,"Notification not found")
@@ -393,7 +408,7 @@ def mark_cve_notification_read(notification_id:int, authorization:str|None=Heade
     return {"read":True}
 @app.get("/api/software")
 def software(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c:
         rows=c.execute("SELECT s.*,a.hostname FROM software s LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.name").fetchall()
     return [dict(r) for r in rows]
@@ -483,7 +498,7 @@ def run_cve_sync(limit=25):
 
 @app.post('/api/cve/sync')
 def cve_sync(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_analyst(authorization)
     result=run_cve_sync(int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
     if result.get("busy"):
         raise HTTPException(409, result["message"])
@@ -512,7 +527,7 @@ async def stop_periodic_cve_worker():
         except asyncio.CancelledError: pass
 @app.get("/api/topology")
 def topology(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM assets").fetchall()
     nodes=[]; edges=[]; networks={}
     for a in rows:
@@ -531,12 +546,12 @@ def topology(authorization:str|None=Header(default=None)):
 
 @app.get("/api/ai/findings")
 def ai_findings(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM log_findings ORDER BY id DESC LIMIT 250").fetchall()
     return [dict(r) for r in rows]
 @app.post("/api/ai/analyze")
 def ai_analyze(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_analyst(authorization)
     with conn() as c:
         findings=c.execute("SELECT * FROM log_findings ORDER BY id DESC LIMIT 100").fetchall()
         events=c.execute("SELECT e.*,a.hostname FROM events e LEFT JOIN assets a ON a.id=e.asset_id WHERE e.category='endpoint-log' ORDER BY e.id DESC LIMIT 150").fetchall()
@@ -561,7 +576,7 @@ def ai_analyze(authorization:str|None=Header(default=None)):
 
 @app.post("/api/diagnostics/inventory")
 def inventory_diagnostic(authorization:str|None=Header(default=None)):
-    require_admin(authorization)
+    require_analyst(authorization)
     with conn() as c:
         rows=c.execute("SELECT * FROM assets").fetchall()
         for a in rows:
@@ -573,7 +588,7 @@ def inventory_diagnostic(authorization:str|None=Header(default=None)):
     return {"checked_assets":len(rows),"message":"Inventory checks completed from endpoint telemetry."}
 @app.post("/api/events")
 async def create_event(request:Request,authorization:str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_analyst(authorization); d=await request.json()
     with conn() as c:
         c.execute("INSERT INTO events(asset_id,severity,category,message,created_at) VALUES(?,?,?,?,?)",
                   (d.get("asset_id"),d.get("severity","info"),d.get("category","manual"),d.get("message",""),now()))
@@ -586,13 +601,13 @@ def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"lab
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
 @app.get("/api/incidents")
 def list_incidents(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM incidents ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, updated_at DESC").fetchall()
     return [dict(r) for r in rows]
 
 @app.post("/api/incidents")
 async def create_incident(request: Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_incident_responder(authorization); d=await request.json()
     title=str(d.get("title","")).strip()
     if not title: raise HTTPException(400,"Incident title required")
     severity=str(d.get("severity","medium")).lower()
@@ -608,7 +623,7 @@ async def create_incident(request: Request, authorization: str|None=Header(defau
 
 @app.patch("/api/incidents/{incident_id}")
 async def update_incident(incident_id:int, request:Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_incident_responder(authorization); d=await request.json()
     allowed={"status","severity","assignee","description","title"}
     changes={k:v for k,v in d.items() if k in allowed}
     if not changes: raise HTTPException(400,"No supported fields")
@@ -625,7 +640,7 @@ async def update_incident(incident_id:int, request:Request, authorization: str|N
 
 @app.post("/api/incidents/from-findings")
 def incidents_from_findings(authorization: str|None=Header(default=None)):
-    require_admin(authorization); created=0
+    require_incident_responder(authorization); created=0
     with conn() as c:
         rows=c.execute("""SELECT f.* FROM log_findings f WHERE NOT EXISTS
           (SELECT 1 FROM incidents i WHERE i.source='finding:'||f.id) ORDER BY f.id DESC LIMIT 100""").fetchall()
@@ -663,13 +678,13 @@ async def add_team_member(request:Request, authorization: str|None=Header(defaul
 
 @app.get("/api/approvals")
 def get_approvals(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_incident_responder(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM approvals ORDER BY id DESC LIMIT 300").fetchall()
     return [dict(r) for r in rows]
 
 @app.post("/api/approvals")
 async def create_approval(request:Request, authorization: str|None=Header(default=None)):
-    require_admin(authorization); d=await request.json()
+    require_incident_responder(authorization); d=await request.json()
     title=str(d.get("title","")).strip(); description=str(d.get("description","")).strip()
     if not title or not description: raise HTTPException(400,"Title and description required")
     with conn() as c:
@@ -691,7 +706,7 @@ async def review_approval(approval_id:int, request:Request, authorization: str|N
 
 @app.get("/api/reports/export.csv")
 def export_csv(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_analyst(authorization)
     import csv, io
     with conn() as c: rows=c.execute("SELECT hostname,platform,ip_addresses,first_seen,last_seen FROM assets ORDER BY hostname").fetchall()
     buf=io.StringIO(); writer=csv.writer(buf); writer.writerow(["hostname","platform","ip_addresses","first_seen","last_seen"])
@@ -720,7 +735,7 @@ async def create_workflow(request:Request, authorization: str|None=Header(defaul
 
 @app.get("/api/ai/agents")
 def list_ai_agents(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c:
         rows=c.execute("""SELECT g.*,a.hostname,a.platform,a.last_seen
           FROM ai_agents g JOIN assets a ON a.id=g.asset_id ORDER BY a.hostname""").fetchall()
@@ -728,7 +743,7 @@ def list_ai_agents(authorization: str|None=Header(default=None)):
 
 @app.post("/api/ai/agents/{asset_id}/analyze")
 def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_analyst(authorization)
     with conn() as c:
         asset=c.execute("SELECT * FROM assets WHERE id=?",(asset_id,)).fetchone()
         if not asset: raise HTTPException(404,"Asset not found")
@@ -776,14 +791,14 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
 
 @app.get("/api/ai/agents/{asset_id}/reports")
 def list_asset_ai_reports(asset_id: str, authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c:
         rows=c.execute("SELECT id,report_type,summary,events_reviewed,created_at FROM ai_reports WHERE asset_id=? ORDER BY id DESC LIMIT 30",(asset_id,)).fetchall()
     return [dict(x) for x in rows]
 
 @app.get("/api/reports/logs")
 def logs_report(authorization: str|None=Header(default=None)):
-    require_admin(authorization)
+    require_read(authorization)
     with conn() as c:
         assets=c.execute("SELECT id,hostname,platform,last_seen FROM assets ORDER BY hostname").fetchall()
         events=c.execute("""SELECT e.*,a.hostname FROM events e LEFT JOIN assets a ON a.id=e.asset_id
