@@ -8,6 +8,7 @@ from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
 from app.authz import get_user_roles
 from app.hypervisors import HypervisorError, configured_providers, inventory as collect_hypervisor_inventory
+from app.network_discovery import discover_network, validate_network
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -102,6 +103,11 @@ def init():
         }.items():
             if col not in vuln_cols: c.execute("ALTER TABLE vulnerabilities ADD COLUMN "+col+" "+ddl)
         c.execute("CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
+        c.execute("""CREATE TABLE IF NOT EXISTS network_discoveries(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, cidr TEXT NOT NULL, ip_address TEXT NOT NULL,
+          hostname TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'reachable',
+          source TEXT NOT NULL DEFAULT 'icmp', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+          UNIQUE(cidr,ip_address))""")
 if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY or not ENROLL:
     raise RuntimeError("SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
 init()
@@ -198,6 +204,25 @@ def asset_inventory(data, asset_id=None):
             c.execute("INSERT INTO software(asset_id,name,version,vendor,collected_at) VALUES(?,?,?,?,?)",
                       (asset_id,str(s.get("name",""))[:255],str(s.get("version",""))[:100],
                        str(s.get("vendor",""))[:255],stamp))
+        # Agent observations are accepted only for valid private CIDRs and addresses inside them.
+        observations = data.get("network_discoveries", [])
+        if isinstance(observations, list):
+            for item in observations[:256]:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    network = validate_network(str(item.get("cidr", "")))
+                    address = ipaddress.ip_address(str(item.get("ip_address", "")))
+                    if address not in network:
+                        continue
+                except ValueError:
+                    continue
+                c.execute("""INSERT INTO network_discoveries(cidr,ip_address,hostname,status,source,first_seen,last_seen)
+                  VALUES(?,?,?,?,?,?,?) ON CONFLICT(cidr,ip_address) DO UPDATE SET
+                  hostname=CASE WHEN excluded.hostname<>'' THEN excluded.hostname ELSE network_discoveries.hostname END,
+                  status='reachable',source='agent-icmp',last_seen=excluded.last_seen""",
+                  (str(network), str(address), str(item.get("hostname", ""))[:255],
+                   "reachable", "agent-icmp", stamp, stamp))
     return asset_id
 
 def asset_json(a, online=None):
@@ -553,6 +578,45 @@ async def stop_periodic_cve_worker():
         task.cancel()
         try: await task
         except asyncio.CancelledError: pass
+
+@app.post("/api/network/discovery")
+async def run_network_discovery(request: Request, authorization: str | None = Header(default=None)):
+    actor = require_analyst(authorization)
+    data = await request.json()
+    cidr = str(data.get("cidr", "")).strip()
+    try:
+        network = validate_network(cidr)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    try:
+        results = await asyncio.to_thread(discover_network, str(network))
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from None
+    stamp = now()
+    with conn() as db:
+        for item in results:
+            db.execute("""INSERT INTO network_discoveries(cidr,ip_address,hostname,status,source,first_seen,last_seen)
+              VALUES(?,?,?,?,?,?,?) ON CONFLICT(cidr,ip_address) DO UPDATE SET
+              hostname=excluded.hostname,status=excluded.status,source=excluded.source,last_seen=excluded.last_seen""",
+              (str(network), item["ip_address"], item.get("hostname", ""), "reachable", "manual-icmp", stamp, stamp))
+    audit("network.discovery", str(network), json.dumps({"hosts_reachable": len(results)}), actor)
+    return {
+        "cidr": str(network),
+        "hosts_scanned": len(list(network.hosts())),
+        "hosts_reachable": len(results),
+        "hosts": results,
+        "limitation": "Découverte ICMP ponctuelle uniquement. Les hôtes qui bloquent le ping peuvent être absents. Aucun agent n'est installé et aucun équipement n'est enrôlé automatiquement.",
+    }
+
+
+@app.get("/api/network/discovery")
+def list_network_discoveries(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    with conn() as db:
+        rows = db.execute("SELECT * FROM network_discoveries ORDER BY last_seen DESC LIMIT 1000").fetchall()
+    return [dict(row) for row in rows]
+
+
 @app.get("/api/topology")
 def topology(authorization:str|None=Header(default=None)):
     require_read(authorization)
