@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
+from app.authz import is_admin_user
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -130,10 +131,7 @@ def require_admin(auth):
         raise HTTPException(401, "Invalid or expired Supabase session")
     # Privileged SOC endpoints require a server-controlled Supabase app_metadata role.
     # user_metadata is deliberately ignored because users can edit it themselves.
-    metadata = user.get("app_metadata") or {}
-    roles = metadata.get("roles") or []
-    role = str(metadata.get("role") or "").lower()
-    if role not in ("admin", "owner") and not any(str(x).lower() in ("admin", "owner") for x in roles):
+    if not is_admin_user(user):
         raise HTTPException(403, "Administrator role required in Supabase app_metadata")
     return str(user.get("email") or user.get("id") or "admin")
 
