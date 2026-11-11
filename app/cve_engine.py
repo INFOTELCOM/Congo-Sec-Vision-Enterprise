@@ -432,16 +432,16 @@ def search_nvd_cpes(keyword: str, *, page: int = 1, page_size: int = 50,
     return _request_json(NVD_CPE_URL + "?" + params, api_key=api_key)
 
 
-def search_nvd_cpe_matches(match_string: str, *, page: int = 1, page_size: int = 50,
+def search_nvd_cpe_matches(cve_id: str, *, page: int = 1, page_size: int = 50,
                            api_key: str = "") -> dict[str, Any]:
-    """Search NVD CPE applicability match criteria, not only dictionary CPE names."""
-    match_string = str(match_string or "").strip()
-    if not match_string.startswith("cpe:2.3:") or len(match_string) > 255:
-        raise ValueError("Saisis une chaîne CPE 2.3 de 1 à 255 caractères.")
+    """Retrieve applicability match strings associated with one CVE from NVD."""
+    cve_id = str(cve_id or "").strip().upper()
+    if not CVE_ID_PATTERN.fullmatch(cve_id):
+        raise ValueError("Saisis un identifiant CVE valide pour retrouver ses critères CPE.")
     page = max(1, min(int(page), 10000))
     page_size = max(1, min(int(page_size), 500))
     params = urllib.parse.urlencode({
-        "matchStringSearch": match_string,
+        "cveId": cve_id,
         "resultsPerPage": page_size,
         "startIndex": (page - 1) * page_size,
     })
