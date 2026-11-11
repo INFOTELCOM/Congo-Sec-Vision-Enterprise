@@ -61,6 +61,7 @@ class CveApplicabilityTests(unittest.TestCase):
 
 
 class NvdPaginationTests(unittest.TestCase):
+    @patch.dict("os.environ", {"NVD_REQUEST_INTERVAL_SECONDS": ""})
     @patch("app.cve_engine.time.sleep")
     @patch("app.cve_engine._request_json")
     def test_search_nvd_fetches_all_pages(self, request, _sleep):
