@@ -61,8 +61,8 @@
  <div class="toolbar">
   <input class="field" id="nvdCpeQuery" placeholder="Dictionnaire CPE : Microsoft Windows" style="min-width:230px;flex:1" onkeydown="if(event.key==='Enter')searchNVDCPE()">
   <button class="ghost" onclick="searchNVDCPE()">Rechercher CPE</button>
-  <input class="field" id="nvdMatchQuery" placeholder="CPE 2.3 : cpe:2.3:a:apache:http_server:*" style="min-width:280px;flex:1" onkeydown="if(event.key==='Enter')searchNVDCPEMatches()">
-  <button class="ghost" onclick="searchNVDCPEMatches()">Critères CPE</button>
+  <input class="field" id="nvdMatchQuery" placeholder="Identifiant CVE : CVE-2026-12345" style="min-width:280px;flex:1" onkeydown="if(event.key==='Enter')searchNVDCPEMatches()">
+  <button class="ghost" onclick="searchNVDCPEMatches()">Critères CPE d’une CVE</button>
  </div>
  <div id="nvdResults" class="empty">Saisis un identifiant CVE, un éditeur ou un produit pour interroger directement NVD.</div>
 </div>
@@ -178,7 +178,7 @@ async function searchNVDCPE(){
 }
 async function searchNVDCPEMatches(){
  const out=document.getElementById("nvdResults"),q=document.getElementById("nvdMatchQuery").value.trim();
- if(!q){out.textContent="Saisis une chaîne CPE 2.3, par exemple cpe:2.3:a:apache:http_server:*.";return;}
+ if(!q){out.textContent="Saisis un identifiant CVE valide pour retrouver ses critères CPE, par exemple CVE-2026-12345.";return;}
  out.textContent="Recherche des critères CPE…";
  try{
   const d=await api("/api/nvd/cpe-matches?q="+encodeURIComponent(q)+"&page=1&page_size=50"),rows=d.matchStrings||[];
@@ -192,7 +192,8 @@ async function exportAssetsCSV(){
  try{
   const {data}=await sb.auth.getSession(),token=data.session?.access_token||"";
   if(!token)throw new Error("Session expirée. Reconnecte-toi.");
-  const response=await fetch((window.CSV_API_BASE||"").replace(/\\/$/,"")+"/api/reports/export.csv",{headers:{Authorization:"Bearer "+token}});
+  let apiBase=String(window.CSV_API_BASE||"");while(apiBase.endsWith("/"))apiBase=apiBase.slice(0,-1);
+  const response=await fetch(apiBase+"/api/reports/export.csv",{headers:{Authorization:"Bearer "+token}});
   if(!response.ok)throw new Error((await response.text()).slice(0,180));
   const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
   link.href=url;link.download="congo-sec-vision-assets.csv";document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
@@ -277,7 +278,7 @@ async function loadHypervisors(){
  const labNode=document.getElementById("hvLabInventory");
  if(providerResult.status==="fulfilled"){
   const providers=providerResult.value;
-  providersNode.innerHTML=providers.map(function(p){return '<div class="kpi"><b>'+esc(p.provider)+'</b><span>'+(p.configured?'<span class="green">Configuré · lecture seule</span>':'<span class="hint">Non configuré</span>')+'</span></div>'}).join("")||'<div class="empty">Aucun connecteur</div>';
+  providersNode.innerHTML=providers.map(function(p){return '<div class="kpi"><b>'+esc(p.provider)+'</b><span>'+(p.configured?'<span class="green">Configuré · lecture seule</span>':'<span class="hint">Non configuré</span>')+'</span><small style="display:block;margin-top:7px;color:#91abc3">'+esc(p.setup_note||"")+'</small><small style="display:block;margin-top:5px;color:'+(p.missing_variables?.length?'#ffbd55':'#23d3a0')+'">'+(p.missing_variables?.length?'À renseigner : '+esc(p.missing_variables.join(", ")):'Paramètres requis présents')+'</small></div>'}).join("")||'<div class="empty">Aucun connecteur</div>';
  }else{
   providersNode.textContent="Connecteurs indisponibles : "+(providerResult.reason?.message||"erreur API");
  }
