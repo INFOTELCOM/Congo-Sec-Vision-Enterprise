@@ -235,12 +235,23 @@ def _extract_cpe(cve: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _epss_for(cve_ids: list[str]) -> dict[str, dict[str, Any]]:
-    if not cve_ids:
-        return {}
-    params = urllib.parse.urlencode({"cve": ",".join(cve_ids[:100])})
-    payload = _request_json(EPSS_URL + "?" + params, timeout=15, attempts=2)
-    return {str(x.get("cve")): {"score": float(x["epss"]), "percentile": float(x["percentile"])}
-            for x in payload.get("data", []) if x.get("cve") and x.get("epss") is not None}
+    """Fetch EPSS in API-sized batches so large NVD result sets are not silently truncated."""
+    result: dict[str, dict[str, Any]] = {}
+    unique_ids = list(dict.fromkeys(str(x) for x in cve_ids if x))
+    for offset in range(0, len(unique_ids), 100):
+        batch = unique_ids[offset:offset + 100]
+        params = urllib.parse.urlencode({"cve": ",".join(batch)})
+        payload = _request_json(EPSS_URL + "?" + params, timeout=15, attempts=2)
+        for item in payload.get("data", []):
+            if item.get("cve") and item.get("epss") is not None:
+                try:
+                    result[str(item["cve"])] = {
+                        "score": float(item["epss"]),
+                        "percentile": float(item["percentile"]),
+                    }
+                except (TypeError, ValueError, KeyError):
+                    continue
+    return result
 
 
 @lru_cache(maxsize=1)
