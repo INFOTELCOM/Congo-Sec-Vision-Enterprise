@@ -93,6 +93,14 @@ Le jeton agent est conservé dans `/var/lib/congo-sec-vision/agent-token.json` a
 Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale** et cliquer sur **Actualiser**. La machine doit apparaître avec son hostname, son OS, ses adresses IP et ses métriques. Le statut « En ligne » dépend d'un heartbeat reçu dans les 3 dernières minutes. Les événements collectés apparaissent dans **Menaces & événements**. N'enrôler que des machines que vous êtes autorisé à administrer.
 
 
+## Machines virtuelles
+
+L'agent Windows/Linux tente de reconnaître si le système invité fonctionne dans une VM (VMware, VirtualBox, Hyper-V, KVM/QEMU, Xen, Parallels et environnements cloud courants). Le résultat est transmis dans l'inventaire et affiché dans **Actifs & machines** sous la forme « VM · fournisseur ».
+
+Cette détection est une heuristique exécutée depuis le système invité : elle peut retourner « non détectée » sur certains environnements et ne constitue pas une preuve de l'hyperviseur. Elle ne donne pas accès à l'état d'alimentation, aux snapshots, aux consoles, à la configuration ou à l'administration de l'hyperviseur.
+
+Pour superviser une VM, installer l'agent dans le système invité comme sur un poste physique et autoriser sa connexion HTTPS vers l'API SOC. La découverte et l'administration centralisées des hôtes VMware, VirtualBox, Hyper-V et Proxmox via leurs API constituent une intégration distincte, non incluse dans cette première étape. Aucun scan réseau automatique ni accès non autorisé n'est effectué.
+
 ## Intelligence CVE — NVD, EPSS et CISA KEV
 
 La branche d'amélioration ajoute au moteur CVE :
