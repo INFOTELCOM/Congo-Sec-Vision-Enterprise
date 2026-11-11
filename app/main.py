@@ -522,7 +522,7 @@ async def create_event(request:Request,authorization:str|None=Header(default=Non
     audit("event.create", d.get("asset_id",""), d.get("message",""))
     return {"created":True}
 @app.get("/api/config")
-def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","24")),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
+def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
 
 
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
@@ -684,7 +684,7 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
     cve_advice=[{"cve_id":v["cve_id"],"severity":v["severity"],"title":v["title"],
        "software_name":v["software_name"],"software_version":v["software_version"],"vendor":v["vendor"],
        "match_confidence":v["match_confidence"],"cve_url":v["cve_url"],
-       **cve_remediation_advice(v["cve_id"],v["severity"],"", "",v["title"])} for v in vuln_rows]
+       **cve_remediation_advice(v["cve_id"],v["severity"],v.get("software_name",""),v.get("software_version",""),v["title"])} for v in vuln_rows]
     llm_result=None
     if LLM_BASE_URL and LLM_MODEL and (log_inputs or software_rows or vuln_rows):
         prompt=("Tu es un analyste SOC défensif. Analyse exclusivement les preuves fournies. N'invente pas de CVE, "
