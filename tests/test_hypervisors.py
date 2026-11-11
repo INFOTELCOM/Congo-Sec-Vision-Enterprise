@@ -40,6 +40,12 @@ Number of CPUs: 2
     def test_vmware_missing_config_fails_closed(self):
         with self.assertRaises(HypervisorError): VMwareConnector().inventory()
 
+    @patch.dict("os.environ", {"CSV_HYPERV_HOST":"http://hyperv.example.invalid", "CSV_HYPERV_USERNAME":"user", "CSV_HYPERV_PASSWORD":"test"})
+    def test_hyperv_refuses_plaintext_winrm(self):
+        from app.hypervisors import HyperVConnector
+        with self.assertRaises(HypervisorError):
+            HyperVConnector().inventory()
+
     @patch("app.hypervisors.shutil.which", return_value=None)
     def test_virtualbox_missing_host_binary_fails_closed(self, _which):
         with self.assertRaises(HypervisorError): VirtualBoxConnector().inventory()
