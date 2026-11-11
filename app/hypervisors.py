@@ -48,9 +48,12 @@ def configured_providers() -> list[dict[str, Any]]:
     result = []
     for provider, required in specs:
         ready = all(_env(key) for key in required)
+        host_collector = False
         if provider == "virtualbox":
-            ready = bool(shutil.which(_env("CSV_VBOXMANAGE_PATH", "VBoxManage")))
-        result.append({"provider": provider, "configured": ready, "mode": "read-only"})
+            host_collector = bool(_env("CSV_VBOX_COLLECTOR_TOKEN"))
+            ready = bool(shutil.which(_env("CSV_VBOXMANAGE_PATH", "VBoxManage"))) or host_collector
+        result.append({"provider": provider, "configured": ready, "mode": "read-only",
+                       "host_collector": host_collector if provider == "virtualbox" else False})
     return result
 
 class VMwareConnector:
