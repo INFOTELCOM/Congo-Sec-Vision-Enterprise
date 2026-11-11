@@ -112,5 +112,43 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(read.status_code, 200)
         self.assertEqual(self.client.get("/api/cve/notifications?unread_only=true", headers=self.headers).json(), [])
 
+
+    def test_hypervisor_provider_status(self):
+        from unittest.mock import patch
+        with patch("app.main.configured_providers", return_value=[
+            {"provider":"vmware","configured":False,"mode":"read-only"},
+            {"provider":"proxmox","configured":True,"mode":"read-only"},
+        ]):
+            response = self.client.get("/api/hypervisors/providers", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[1]["provider"], "proxmox")
+
+    def test_hypervisor_inventory_reads_from_supabase_soc(self):
+        from unittest.mock import patch
+        rows = [{"provider":"proxmox","vm_id":"100","name":"soc-lab","state":"running",
+                 "metadata":{"node":"pve01"},"last_seen":"2026-11-11T00:00:00Z","updated_by":"analyst"}]
+        with patch("app.main.supabase_soc_request", return_value=rows) as request:
+            response = self.client.get("/api/hypervisors/inventory", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]["vm_id"], "100")
+        request.assert_called_once()
+
+    def test_hypervisor_sync_isolated_per_provider_and_upserts_to_supabase(self):
+        from unittest.mock import patch
+        providers = [
+            {"provider":"proxmox","configured":True,"mode":"read-only"},
+            {"provider":"vmware","configured":False,"mode":"read-only"},
+        ]
+        machines = [{"provider":"proxmox","id":"100","name":"soc-lab","state":"running",
+                     "read_only":True,"metadata":{"node":"pve01"}}]
+        with patch("app.main.configured_providers", return_value=providers), \
+             patch("app.main.collect_hypervisor_inventory", return_value=machines), \
+             patch("app.main.supabase_soc_request", return_value=[{"vm_id":"100"}]) as request:
+            response = self.client.post("/api/hypervisors/sync", headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["results"][0]["status"], "ok")
+        self.assertEqual(response.json()["results"][1]["status"], "not-configured")
+        self.assertEqual(request.call_args.args[0], "hypervisor_inventory?on_conflict=provider,vm_id")
+
 if __name__ == "__main__":
     unittest.main()
