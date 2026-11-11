@@ -137,6 +137,8 @@ class HyperVConnector:
         username, password = _env("CSV_HYPERV_USERNAME"), _env("CSV_HYPERV_PASSWORD")
         if not (host and username and password): raise HypervisorError("Hyper-V connector is not configured")
         endpoint = host if host.startswith(("http://", "https://")) else f"https://{host}:5986/wsman"
+        if not endpoint.startswith("https://"):
+            raise HypervisorError("Hyper-V WinRM must use HTTPS; plaintext HTTP is refused")
         try: import winrm
         except ImportError: raise HypervisorError("Hyper-V connector requires pywinrm") from None
         try:
