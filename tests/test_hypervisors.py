@@ -50,7 +50,6 @@ Number of CPUs: 2
     def test_virtualbox_missing_host_binary_fails_closed(self, _which):
         with self.assertRaises(HypervisorError): VirtualBoxConnector().inventory()
 
-if __name__ == "__main__": unittest.main()
 
 # Additional adapter safety tests. Provider APIs and host commands are mocked;
 # these tests never contact real infrastructure.
@@ -96,7 +95,7 @@ class HypervisorReadOnlySafetyTests(unittest.TestCase):
     @patch("app.hypervisors.shutil.which", return_value="/usr/bin/VBoxManage")
     @patch("app.hypervisors.subprocess.run")
     def test_virtualbox_executes_only_inventory_command(self, run, _which):
-        run.return_value = Mock(returncode=0, stdout="Name: lab\\nUUID: vm-1\\nState: powered off\\n")
+        run.return_value = Mock(returncode=0, stdout="Name: lab\nUUID: vm-1\nState: powered off\n")
         rows = VirtualBoxConnector().inventory()
         self.assertEqual(rows[0]["id"], "vm-1")
         self.assertEqual(run.call_args.args[0], ["/usr/bin/VBoxManage", "list", "vms", "--long"])
@@ -118,3 +117,7 @@ class HypervisorReadOnlySafetyTests(unittest.TestCase):
         command = session.run_ps.call_args.args[0]
         self.assertIn("Get-VM", command)
         self.assertNotRegex(command, r"(?i)\b(Start|Stop|Remove|Set)-VM\b")
+
+
+if __name__ == "__main__":
+    unittest.main()
