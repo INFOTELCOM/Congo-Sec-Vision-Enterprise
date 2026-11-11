@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from app.cve_engine import (
     _applies, _version_compare, _severity, _extract_weaknesses,
-    search_nvd, scan_product,
+    search_nvd, scan_product, _epss_for,
 )
 
 
@@ -58,6 +58,20 @@ class CveApplicabilityTests(unittest.TestCase):
         }
         self.assertEqual(_severity(cve)[:3], ("critical", 9.8, "3.1"))
         self.assertEqual(_extract_weaknesses(cve), ["CWE-79"])
+
+
+class EpssBatchTests(unittest.TestCase):
+    @patch("app.cve_engine._request_json")
+    def test_epss_fetches_more_than_one_hundred_ids(self, request):
+        ids = [f"CVE-2025-{i:04d}" for i in range(101)]
+        request.side_effect = [
+            {"data": [{"cve": ids[0], "epss": "0.2", "percentile": "0.4"}]},
+            {"data": [{"cve": ids[100], "epss": "0.8", "percentile": "0.9"}]},
+        ]
+        result = _epss_for(ids)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[ids[100]]["score"], 0.8)
 
 
 class NvdPaginationTests(unittest.TestCase):
