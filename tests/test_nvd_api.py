@@ -53,11 +53,11 @@ class NvdInteractiveApiTests(unittest.TestCase):
         self.assertIn("keywordSearch=Microsoft", request.call_args.args[0])
 
     @patch("app.cve_engine._request_json")
-    def test_cpe_match_search_uses_match_criteria_endpoint(self, request):
+    def test_cpe_match_search_uses_cve_id_endpoint(self, request):
         request.return_value = {"totalResults": 0, "matchStrings": []}
-        cve_engine.search_nvd_cpe_matches("cpe:2.3:a:apache:http_server:*")
+        cve_engine.search_nvd_cpe_matches("CVE-2026-12345")
         self.assertIn("/cpematch/2.0?", request.call_args.args[0])
-        self.assertIn("matchStringSearch=cpe", request.call_args.args[0])
+        self.assertIn("cveId=CVE-2026-12345", request.call_args.args[0])
 
     def test_cpe_match_search_rejects_invalid_input(self):
         with self.assertRaises(ValueError):
