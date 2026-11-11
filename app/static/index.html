@@ -232,18 +232,20 @@ async function loadOpenCVEStatus(){
   return null;
  }
 }
-async function searchOpenCVE(){
+let openCVEPage=1;
+async function searchOpenCVE(page=1){
  const out=document.getElementById("opencveResults"),query=document.getElementById("opencveQuery").value.trim();
- out.textContent="Recherche OpenCVE en cours…";
+ openCVEPage=Math.max(1,Number(page)||1);out.textContent="Recherche OpenCVE en cours…";
  try{
-  const params=new URLSearchParams({page:"1",page_size:"50"});
+  const params=new URLSearchParams({page:String(openCVEPage),page_size:"50"});
   if(query)params.set("q",query);
   const data=await api("/api/opencve/cves?"+params.toString());
   const rows=Array.isArray(data.results)?data.results:[];
-  out.innerHTML='<p class="notice">'+Number(data.count||rows.length)+' résultat(s) · page 1 · source OpenCVE</p>'+
+  out.innerHTML='<p class="notice">'+Number(data.count||rows.length)+' résultat(s) · page '+openCVEPage+' · source OpenCVE</p>'+
    (rows.length?'<div class="tablewrap"><table><thead><tr><th>CVE</th><th>Titre</th><th>Dernière mise à jour</th><th>Détails</th></tr></thead><tbody>'+
     rows.map(function(item){const id=String(item.cve_id||"");return '<tr><td><b>'+esc(id)+'</b></td><td>'+esc(item.title||item.description||"—")+'</td><td>'+fmt(item.updated_at)+'</td><td><button class="action" onclick="viewOpenCVE(\''+esc(id)+'\')">Détails + historique</button></td></tr>'}).join("")+
-   '</tbody></table></div>':'<div class="empty">Aucun résultat. Vérifie la syntaxe de recherche ou les droits du jeton.</div>');
+   '</tbody></table></div>':'<div class="empty">Aucun résultat. Vérifie la syntaxe de recherche ou les droits du jeton.</div>')+
+   '<div class="toolbar" style="margin-top:10px"><button class="ghost" '+(data.previous?'':'disabled')+' onclick="searchOpenCVE('+(openCVEPage-1)+')">Page précédente</button><button class="ghost" '+(data.next?'':'disabled')+' onclick="searchOpenCVE('+(openCVEPage+1)+')">Page suivante</button></div>';
  }catch(e){out.textContent="Recherche OpenCVE impossible : "+e.message;}
 }
 async function viewOpenCVE(cveId){
