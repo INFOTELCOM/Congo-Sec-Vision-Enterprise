@@ -33,6 +33,13 @@ def init():
         CREATE TABLE IF NOT EXISTS vulnerabilities(id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT,
           cve_id TEXT, severity TEXT, title TEXT, status TEXT DEFAULT 'open', source TEXT, created_at TEXT NOT NULL,
           UNIQUE(asset_id,cve_id));
+        CREATE TABLE IF NOT EXISTS cve_history(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, vulnerability_id INTEGER NOT NULL, cve_id TEXT NOT NULL,
+          event_type TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS cve_subscriptions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL DEFAULT '', product TEXT NOT NULL DEFAULT '',
+          asset_id TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
+          created_at TEXT NOT NULL, UNIQUE(vendor,product,asset_id));
         CREATE TABLE IF NOT EXISTS software(id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT,
           name TEXT, version TEXT, vendor TEXT, collected_at TEXT);
         CREATE TABLE IF NOT EXISTS log_findings(id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT,
@@ -71,7 +78,15 @@ def init():
         cols={r["name"] for r in c.execute("PRAGMA table_info(events)").fetchall()}
         if "raw" not in cols: c.execute("ALTER TABLE events ADD COLUMN raw TEXT")
         vuln_cols={r["name"] for r in c.execute("PRAGMA table_info(vulnerabilities)").fetchall()}
-        for col, ddl in {"software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''","match_confidence":"TEXT DEFAULT 'candidate'","cve_url":"TEXT DEFAULT ''"}.items():
+        for col, ddl in {
+            "software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''",
+            "match_confidence":"TEXT DEFAULT 'candidate'","cve_url":"TEXT DEFAULT ''",
+            "cvss_score":"REAL","cvss_version":"TEXT DEFAULT ''","cvss_vector":"TEXT DEFAULT ''",
+            "cwe_ids":"TEXT DEFAULT '[]'","cpe_matches":"TEXT DEFAULT '[]'","references_json":"TEXT DEFAULT '[]'",
+            "epss_score":"REAL","epss_percentile":"REAL","known_exploited":"INTEGER NOT NULL DEFAULT 0",
+            "published_at":"TEXT DEFAULT ''","last_modified_at":"TEXT DEFAULT ''","vuln_status":"TEXT DEFAULT ''",
+            "sources_json":"TEXT DEFAULT '[]'","assigned_to":"TEXT DEFAULT ''","tags_json":"TEXT DEFAULT '[]'"
+        }.items():
             if col not in vuln_cols: c.execute("ALTER TABLE vulnerabilities ADD COLUMN "+col+" "+ddl)
         c.execute("CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
 if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY or not ENROLL:
@@ -113,9 +128,14 @@ def require_admin(auth):
             user = json.loads(response.read())
     except Exception:
         raise HTTPException(401, "Invalid or expired Supabase session")
-    # Any valid Supabase account may use the connected SOC API.
-    # Privileged role checks should be added to admin-only operations separately.
-    return str(user.get("email") or user.get("id") or "user")
+    # Privileged SOC endpoints require a server-controlled Supabase app_metadata role.
+    # user_metadata is deliberately ignored because users can edit it themselves.
+    metadata = user.get("app_metadata") or {}
+    roles = metadata.get("roles") or []
+    role = str(metadata.get("role") or "").lower()
+    if role not in ("admin", "owner") and not any(str(x).lower() in ("admin", "owner") for x in roles):
+        raise HTTPException(403, "Administrator role required in Supabase app_metadata")
+    return str(user.get("email") or user.get("id") or "admin")
 
 def run_internal_ai(asset_id):
     marker = _internal_task.set(True)
@@ -252,10 +272,99 @@ def events(authorization:str|None=Header(default=None)):
     with conn() as c: rows=c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 200").fetchall()
     return [dict(r) for r in rows]
 @app.get("/api/vulnerabilities")
-def vulnerabilities(authorization:str|None=Header(default=None)):
+def vulnerabilities(severity: str|None=None, vendor: str|None=None, product: str|None=None,
+                    cwe: str|None=None, status: str|None=None, kev: bool|None=None,
+                    min_cvss: float|None=None, min_epss: float|None=None, search: str|None=None,
+                    authorization:str|None=Header(default=None)):
     require_admin(authorization)
-    with conn() as c: rows=c.execute("SELECT * FROM vulnerabilities ORDER BY created_at DESC").fetchall()
+    clauses=[]; params=[]
+    if severity: clauses.append("lower(severity)=?"); params.append(severity.lower())
+    if vendor: clauses.append("lower(vendor) LIKE ?"); params.append("%"+vendor.lower()+"%")
+    if product: clauses.append("lower(software_name) LIKE ?"); params.append("%"+product.lower()+"%")
+    if cwe: clauses.append("cwe_ids LIKE ?"); params.append("%"+cwe.upper()+"%")
+    if status: clauses.append("lower(status)=?"); params.append(status.lower())
+    if kev is not None: clauses.append("known_exploited=?"); params.append(1 if kev else 0)
+    if min_cvss is not None: clauses.append("cvss_score>=?"); params.append(min_cvss)
+    if min_epss is not None: clauses.append("epss_score>=?"); params.append(min_epss)
+    if search:
+        clauses.append("(cve_id LIKE ? OR title LIKE ? OR software_name LIKE ? OR vendor LIKE ?)")
+        params.extend(["%"+search+"%"]*4)
+    sql="SELECT * FROM vulnerabilities"+(" WHERE "+" AND ".join(clauses) if clauses else "")+" ORDER BY known_exploited DESC, cvss_score DESC, created_at DESC LIMIT 2000"
+    with conn() as c: rows=c.execute(sql,params).fetchall()
+    result=[]
+    for row in rows:
+        item=dict(row)
+        for field in ("cwe_ids","cpe_matches","references_json","sources_json","tags_json"):
+            try: item[field.removesuffix("_json") if field.endswith("_json") else field]=json.loads(item.get(field) or "[]")
+            except (TypeError,ValueError): item[field.removesuffix("_json") if field.endswith("_json") else field]=[]
+        result.append(item)
+    return result
+
+@app.patch("/api/vulnerabilities/{vulnerability_id}")
+async def update_vulnerability(vulnerability_id: int, request: Request, authorization:str|None=Header(default=None)):
+    actor=require_admin(authorization); data=await request.json()
+    allowed={"open","needs-validation","under-analysis","risk-accepted","fixed","false-positive"}
+    changes={}
+    if "status" in data:
+        status=str(data["status"]).lower()
+        if status not in allowed: raise HTTPException(400,"Invalid vulnerability status")
+        changes["status"]=status
+    if "assigned_to" in data: changes["assigned_to"]=str(data["assigned_to"] or "")[:180]
+    if "tags" in data:
+        tags=data["tags"]
+        if not isinstance(tags,list) or len(tags)>30: raise HTTPException(400,"tags must be an array of at most 30 items")
+        changes["tags_json"]=json.dumps(sorted({str(x).strip()[:40] for x in tags if str(x).strip()}),ensure_ascii=False)
+    if not changes: raise HTTPException(400,"No supported fields")
+    with conn() as c:
+        row=c.execute("SELECT cve_id FROM vulnerabilities WHERE id=?",(vulnerability_id,)).fetchone()
+        if not row: raise HTTPException(404,"Vulnerability not found")
+        c.execute("UPDATE vulnerabilities SET "+", ".join(k+"=?" for k in changes)+" WHERE id=?",
+                  (*changes.values(),vulnerability_id))
+        c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
+                  (vulnerability_id,row["cve_id"],"analyst-update",json.dumps(changes,ensure_ascii=False),now()))
+    audit("cve.update",vulnerability_id,json.dumps(changes,ensure_ascii=False),actor)
+    return {"updated":True,"id":vulnerability_id}
+
+@app.get("/api/cve/history")
+def cve_history(cve_id: str|None=None, authorization:str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c:
+        if cve_id:
+            rows=c.execute("SELECT * FROM cve_history WHERE cve_id=? ORDER BY id DESC LIMIT 500",(cve_id,)).fetchall()
+        else:
+            rows=c.execute("SELECT * FROM cve_history ORDER BY id DESC LIMIT 500").fetchall()
     return [dict(r) for r in rows]
+
+@app.get("/api/cve/subscriptions")
+def list_cve_subscriptions(authorization:str|None=Header(default=None)):
+    require_admin(authorization)
+    with conn() as c: rows=c.execute("SELECT * FROM cve_subscriptions ORDER BY id DESC").fetchall()
+    return [dict(r) for r in rows]
+
+@app.post("/api/cve/subscriptions")
+async def create_cve_subscription(request: Request, authorization:str|None=Header(default=None)):
+    actor=require_admin(authorization); data=await request.json()
+    vendor=str(data.get("vendor") or "").strip()[:255]
+    product=str(data.get("product") or "").strip()[:255]
+    asset_id=str(data.get("asset_id") or "").strip()[:80]
+    if not vendor and not product: raise HTTPException(400,"Vendor or product is required")
+    try:
+        with conn() as c:
+            cur=c.execute("INSERT INTO cve_subscriptions(vendor,product,asset_id,created_by,created_at) VALUES(?,?,?,?,?)",
+                          (vendor,product,asset_id,actor,now()))
+    except sqlite3.IntegrityError:
+        raise HTTPException(409,"Subscription already exists")
+    audit("cve.subscription.create",cur.lastrowid,vendor+" "+product,actor)
+    return {"id":cur.lastrowid,"created":True}
+
+@app.delete("/api/cve/subscriptions/{subscription_id}")
+def delete_cve_subscription(subscription_id:int, authorization:str|None=Header(default=None)):
+    actor=require_admin(authorization)
+    with conn() as c:
+        cur=c.execute("DELETE FROM cve_subscriptions WHERE id=?",(subscription_id,))
+    if not cur.rowcount: raise HTTPException(404,"Subscription not found")
+    audit("cve.subscription.delete",subscription_id,"",actor)
+    return {"deleted":True}
 @app.get("/api/software")
 def software(authorization:str|None=Header(default=None)):
     require_admin(authorization)
@@ -277,12 +386,30 @@ def run_cve_sync(limit=25):
             for v in records:
                 with conn() as c:
                     old=c.execute('SELECT id FROM vulnerabilities WHERE asset_id=? AND cve_id=?',(p['asset_id'],v['cve_id'])).fetchone()
-                    values=(v['severity'],v['title'],p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'])
+                    stamp=now()
+                    values=(v['severity'],v['title'],p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'],
+                      v.get('cvss_score'),v.get('cvss_version',''),v.get('cvss_vector',''),
+                      json.dumps(v.get('cwe_ids',[])),json.dumps(v.get('cpe_matches',[])),
+                      json.dumps(v.get('references',[])),v.get('epss_score'),v.get('epss_percentile'),
+                      1 if v.get('known_exploited') else 0,v.get('published',''),v.get('last_modified',''),
+                      v.get('vuln_status',''),json.dumps(v.get('sources',[])))
                     if old:
-                        c.execute("UPDATE vulnerabilities SET severity=?,title=?,software_name=?,software_version=?,vendor=?,match_confidence=?,cve_url=? WHERE id=?",values+(old['id'],)); refreshed+=1
+                        c.execute("""UPDATE vulnerabilities SET severity=?,title=?,software_name=?,software_version=?,vendor=?,
+                          match_confidence=?,cve_url=?,cvss_score=?,cvss_version=?,cvss_vector=?,cwe_ids=?,cpe_matches=?,
+                          references_json=?,epss_score=?,epss_percentile=?,known_exploited=?,published_at=?,last_modified_at=?,
+                          vuln_status=?,sources_json=? WHERE id=?""",values+(old['id'],)); refreshed+=1
+                        c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
+                          (old['id'],v['cve_id'],'source-refresh',json.dumps({'cvss_score':v.get('cvss_score'),'epss_score':v.get('epss_score'),'known_exploited':v.get('known_exploited')}),stamp))
                     else:
-                        c.execute("INSERT INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at,software_name,software_version,vendor,match_confidence,cve_url) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (p['asset_id'],v['cve_id'],v['severity'],v['title'],'needs-validation','NVD CVE API',now(),p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'])); added+=1
+                        cur=c.execute("""INSERT INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at,
+                          software_name,software_version,vendor,match_confidence,cve_url,cvss_score,cvss_version,cvss_vector,
+                          cwe_ids,cpe_matches,references_json,epss_score,epss_percentile,known_exploited,published_at,
+                          last_modified_at,vuln_status,sources_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                          (p['asset_id'],v['cve_id'],v['severity'],v['title'],'needs-validation','NVD CVE API',stamp,
+                           p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'],*values[7:]))
+                        c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
+                          (cur.lastrowid,v['cve_id'],'first-seen',json.dumps({'match_confidence':v['match_confidence'],'cvss_score':v.get('cvss_score')}),stamp))
+                        added+=1
                 if v['match_confidence']=='version-range-match': matched+=1
         except Exception as exc: errors.append({'software':p['name'],'error':str(exc)[:220]})
     with conn() as c:
@@ -292,7 +419,7 @@ def run_cve_sync(limit=25):
         c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('last_cve_sync',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(now(),now()))
     return {'software_checked':checked,'software_total':total,'candidate_records_added':added,'records_refreshed':refreshed,
       'version_range_matches':matched,'errors':errors,'last_sync':now(),
-      'warning':'CPE/version range match is a candidate, not proof of exposure. Check vendor advisories, edition, backported fixes and host context.'}
+      'warning':'Une correspondance CPE/version reste un candidat à valider, pas une preuve d’exposition. Vérifier l’édition, les correctifs rétroportés et l’avis éditeur.'}
 
 @app.post('/api/cve/sync')
 def cve_sync(authorization:str|None=Header(default=None)):
