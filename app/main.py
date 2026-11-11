@@ -383,7 +383,7 @@ def run_cve_sync(limit=25):
             checked+=1
             for v in records:
                 with conn() as c:
-                    old=c.execute('SELECT id FROM vulnerabilities WHERE asset_id=? AND cve_id=?',(p['asset_id'],v['cve_id'])).fetchone()
+                    old=c.execute('SELECT * FROM vulnerabilities WHERE asset_id=? AND cve_id=?',(p['asset_id'],v['cve_id'])).fetchone()
                     stamp=now()
                     values=(v['severity'],v['title'],p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'],
                       v.get('cvss_score'),v.get('cvss_version',''),v.get('cvss_vector',''),
@@ -396,8 +396,16 @@ def run_cve_sync(limit=25):
                           match_confidence=?,cve_url=?,cvss_score=?,cvss_version=?,cvss_vector=?,cwe_ids=?,cpe_matches=?,
                           references_json=?,epss_score=?,epss_percentile=?,known_exploited=?,published_at=?,last_modified_at=?,
                           vuln_status=?,sources_json=? WHERE id=?""",values+(old['id'],)); refreshed+=1
-                        c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
-                          (old['id'],v['cve_id'],'source-refresh',json.dumps({'cvss_score':v.get('cvss_score'),'epss_score':v.get('epss_score'),'known_exploited':v.get('known_exploited')}),stamp))
+                        changed = (
+                          old['severity'] != v['severity'] or old['title'] != v['title'] or
+                          old['match_confidence'] != v['match_confidence'] or
+                          old['cvss_score'] != v.get('cvss_score') or
+                          old['epss_score'] != v.get('epss_score') or
+                          bool(old['known_exploited']) != bool(v.get('known_exploited'))
+                        )
+                        if changed:
+                            c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
+                              (old['id'],v['cve_id'],'source-change',json.dumps({'cvss_score':v.get('cvss_score'),'epss_score':v.get('epss_score'),'known_exploited':v.get('known_exploited')}),stamp))
                     else:
                         cur=c.execute("""INSERT INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at,
                           software_name,software_version,vendor,match_confidence,cve_url,cvss_score,cvss_version,cvss_vector,
@@ -427,7 +435,7 @@ def cve_sync(authorization:str|None=Header(default=None)):
     return result
 
 async def periodic_cve_worker():
-    interval=max(1,int(os.getenv('CVE_SYNC_INTERVAL_HOURS','24')))*3600
+    interval=max(1,int(os.getenv('CVE_SYNC_INTERVAL_HOURS','1')))*3600
     await asyncio.sleep(30)
     while True:
         try: await asyncio.to_thread(run_cve_sync,int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
