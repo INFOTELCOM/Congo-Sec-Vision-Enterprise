@@ -1,4 +1,4 @@
-import os, json, secrets, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio, contextvars
+import os, json, secrets, hashlib, sqlite3, urllib.parse, urllib.request, urllib.error, subprocess, re, ipaddress, time, asyncio, contextvars
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Header, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -81,6 +81,12 @@ def init():
           events_reviewed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
           FOREIGN KEY(asset_id) REFERENCES assets(id));
         """)
+        # Existing installations stored raw agent tokens. Migrate them once to SHA-256 digests.
+        for token_row in c.execute("SELECT token FROM agent_tokens").fetchall():
+            stored_token = str(token_row["token"] or "")
+            if stored_token and not re.fullmatch(r"[0-9a-f]{64}", stored_token):
+                c.execute("UPDATE agent_tokens SET token=? WHERE token=?",
+                          (hashlib.sha256(stored_token.encode("utf-8")).hexdigest(), stored_token))
         cols={r["name"] for r in c.execute("PRAGMA table_info(events)").fetchall()}
         if "raw" not in cols: c.execute("ALTER TABLE events ADD COLUMN raw TEXT")
         vuln_cols={r["name"] for r in c.execute("PRAGMA table_info(vulnerabilities)").fetchall()}
@@ -154,7 +160,8 @@ def audit(action, target="", details="", actor="admin"):
 def require_agent(auth):
     token=bearer(auth)
     if not token: raise HTTPException(401,"Agent token required")
-    with conn() as c: row=c.execute("SELECT asset_id FROM agent_tokens WHERE token=?",(token,)).fetchone()
+    token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with conn() as c: row=c.execute("SELECT asset_id FROM agent_tokens WHERE token=?",(token_hash,)).fetchone()
     if not row: raise HTTPException(401,"Unknown agent token")
     return row["asset_id"]
 def asset_inventory(data, asset_id=None):
@@ -198,7 +205,7 @@ async def enroll(request:Request,background_tasks: BackgroundTasks,authorization
     if bearer(authorization)!=ENROLL: raise HTTPException(403,"Enrollment not authorized")
     aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
     with conn() as c:
-        c.execute("INSERT INTO agent_tokens VALUES(?,?)",(token,aid))
+        c.execute("INSERT INTO agent_tokens VALUES(?,?)",(hashlib.sha256(token.encode("utf-8")).hexdigest(),aid))
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
     background_tasks.add_task(run_internal_ai, aid)
@@ -398,7 +405,7 @@ def run_cve_sync(limit=25):
         products=c.execute("SELECT DISTINCT name,version,vendor,asset_id FROM software WHERE name!='' ORDER BY name LIMIT ? OFFSET ?",(max(1,min(int(limit),100)),offset)).fetchall()
     checked=0; added=0; refreshed=0; matched=0; errors=[]
     for idx,p in enumerate(products):
-        if idx: time.sleep(0.7 if NVD_API_KEY else 6.1)
+        if idx: time.sleep(max(0.0,float(os.getenv("CVE_SYNC_PRODUCT_INTERVAL_SECONDS", "0.7" if NVD_API_KEY else "6.1"))))
         try:
             records=scan_product(p['name'],p['version'],p['vendor'],NVD_API_KEY)
             checked+=1
@@ -468,7 +475,9 @@ def cve_sync(authorization:str|None=Header(default=None)):
     return result
 
 async def periodic_cve_worker():
-    interval=max(1,int(os.getenv('CVE_SYNC_INTERVAL_HOURS','1')))*3600
+    legacy_minutes = max(1, int(os.getenv("CVE_SYNC_INTERVAL_HOURS", "1"))) * 60
+    interval_minutes = max(5, int(os.getenv("CVE_SYNC_INTERVAL_MINUTES", str(legacy_minutes))))
+    interval = interval_minutes * 60
     await asyncio.sleep(30)
     while True:
         try: await asyncio.to_thread(run_cve_sync,int(os.getenv('CVE_SYNC_BATCH_SIZE','25')))
@@ -555,7 +564,7 @@ async def create_event(request:Request,authorization:str|None=Header(default=Non
     audit("event.create", d.get("asset_id",""), d.get("message",""))
     return {"created":True}
 @app.get("/api/config")
-def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
+def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"cve_sync_interval_minutes":max(5,int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",str(int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1"))*60)))),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
 
 
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
