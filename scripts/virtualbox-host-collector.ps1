@@ -53,7 +53,7 @@ foreach ($block in $blocks) {
 
     $machines += @{
         id = [string]$values["UUID"]
-        name = [string]($values["Name"] ?? $values["UUID"])
+        name = if ($values["Name"]) { [string]$values["Name"] } else { [string]$values["UUID"] }
         state = $state
         metadata = @{
             guest_os = [string]$values["Guest OS"]
