@@ -101,9 +101,12 @@ La branche d'amélioration ajoute au moteur CVE :
 - évaluation récursive des nœuds CPE AND/OR et des bornes de versions, en mode conservateur ;
 - enrichissement EPSS (FIRST) et indicateur CISA Known Exploited Vulnerabilities (KEV) ;
 - filtres CVE par gravité, éditeur, produit, CWE, CVSS, EPSS, KEV et statut ;
-- historique des changements, assignation analyste, tags et abonnements éditeur/produit.
+- historique des changements, assignation analyste, tags, abonnements éditeur/produit et alertes dans la console.
 
 **Interprétation :** un résultat CPE est un candidat à vérifier, pas une preuve d'exploitabilité. EPSS est une estimation probabiliste, CVSS mesure la sévérité technique et KEV signale une exploitation connue. Le contexte de l'actif, les avis éditeurs et les correctifs rétroportés doivent être vérifiés.
+
+
+Les alertes actuellement implémentées sont des notifications internes à la console, créées lors de la découverte d'une nouvelle CVE correspondant à un abonnement. L'envoi e-mail, Slack, Teams ou webhook n'est pas encore implémenté ; les abonnements ne doivent donc pas être considérés comme un service de notification externe.
 
 ### Autoriser un administrateur Supabase
 
