@@ -91,3 +91,35 @@ Le jeton agent est conservé dans `/var/lib/congo-sec-vision/agent-token.json` a
 ### Vérification
 
 Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale** et cliquer sur **Actualiser**. La machine doit apparaître avec son hostname, son OS, ses adresses IP et ses métriques. Le statut « En ligne » dépend d'un heartbeat reçu dans les 3 dernières minutes. Les événements collectés apparaissent dans **Menaces & événements**. N'enrôler que des machines que vous êtes autorisé à administrer.
+
+
+## Intelligence CVE — NVD, EPSS et CISA KEV
+
+La branche d'amélioration ajoute au moteur CVE :
+- pagination NVD 2.0 avec reprise bornée et temporisation configurable ;
+- lecture des métriques CVSS 4.0 / 3.1 / 3.0 / 2.0, vecteur, CWE, CPE, références et dates ;
+- évaluation récursive des nœuds CPE AND/OR et des bornes de versions, en mode conservateur ;
+- enrichissement EPSS (FIRST) et indicateur CISA Known Exploited Vulnerabilities (KEV) ;
+- filtres CVE par gravité, éditeur, produit, CWE, CVSS, EPSS, KEV et statut ;
+- historique des changements, assignation analyste, tags et abonnements éditeur/produit.
+
+**Interprétation :** un résultat CPE est un candidat à vérifier, pas une preuve d'exploitabilité. EPSS est une estimation probabiliste, CVSS mesure la sévérité technique et KEV signale une exploitation connue. Le contexte de l'actif, les avis éditeurs et les correctifs rétroportés doivent être vérifiés.
+
+### Autoriser un administrateur Supabase
+
+Les routes SOC privilégiées exigent maintenant un rôle défini côté serveur dans `app_metadata`. Sur le compte administrateur uniquement, définir dans Supabase Auth `app_metadata.role = "admin"` (ou `app_metadata.roles = ["admin"]`). Ne pas placer ce rôle dans `user_metadata`, qui est modifiable par l'utilisateur. Les comptes sans rôle administrateur reçoivent HTTP 403. Prévoir un compte de secours et tester le rôle avant le déploiement.
+
+### Synchronisation
+
+Par défaut, le worker traite un lot toutes les heures. Ajuster `CVE_SYNC_INTERVAL_HOURS`, `CVE_SYNC_BATCH_SIZE`, `NVD_API_KEY` et `NVD_REQUEST_INTERVAL_SECONDS` selon la taille de l'inventaire et les limites NVD. Les enrichissements EPSS/KEV sont facultatifs : une indisponibilité de ces services ne doit pas empêcher l'import NVD.
+
+## Conditions bloquantes avant production
+
+Cette branche améliore le moteur CVE et le triage, mais **ne constitue pas encore une autorisation de mise en production**. Les éléments suivants doivent être validés ou achevés :
+- remplacer SQLite par PostgreSQL avec migrations versionnées, sauvegardes chiffrées et test de restauration ;
+- implémenter les permissions effectives par rôle (admin, analyste, lecteur, répondant), MFA et gestion de session ;
+- sécuriser l'enrôlement et la rotation des secrets agents, rate limiting, audit immuable et gestion des secrets ;
+- exécuter les tests d'intégration sur NVD/EPSS/KEV, les tests de charge, de reprise et les tests multi-OS ;
+- valider l'interface, le déploiement HTTPS, les sauvegardes et les procédures d'incident sur une infrastructure cible.
+
+Ne pas exposer directement une instance non validée sur Internet. Les actions de remédiation restent manuelles et soumises à validation.
