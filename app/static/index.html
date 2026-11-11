@@ -131,6 +131,74 @@ async function loadCVE(){
 
  }catch(e){const el=document.getElementById("cveresult");if(el)el.textContent="Erreur CVE : "+e.message}
 }
+async function loadNVDStatus(){
+ const badge=document.getElementById("nvdStatus");
+ try{const x=await api("/api/nvd/status");if(badge)badge.textContent="NVD API 2.0 · "+(x.api_key_configured?"clé configurée":"mode prudent sans clé");}
+ catch(e){if(badge)badge.textContent="NVD indisponible : "+e.message;}
+}
+async function searchNVD(){
+ const out=document.getElementById("nvdResults"),q=document.getElementById("nvdQuery").value.trim();
+ if(!q){out.textContent="Saisis un identifiant CVE, un éditeur ou un produit.";return;}
+ if(/^CVE-[0-9]{4}-[0-9]{4,}$/i.test(q)){await viewNVDCVE(q);return;}
+ out.textContent="Interrogation de NVD API 2.0…";
+ try{
+  const d=await api("/api/nvd/cves?q="+encodeURIComponent(q)+"&page=1&page_size=50"),rows=d.vulnerabilities||[];
+  out.innerHTML='<p class="notice">'+Number(d.totalResults||0).toLocaleString("fr-FR")+' CVE correspondante(s) · NVD API 2.0</p>'+
+   (rows.length?'<div class="tablewrap"><table><thead><tr><th>CVE</th><th>Publication</th><th>Dernière modification</th><th>Statut</th><th>Détail</th></tr></thead><tbody>'+
+   rows.map(function(x){const c=x.cve||{},id=String(c.id||""),desc=(c.descriptions||[]).find(y=>y.lang==="en")?.value||"";return '<tr><td><b>'+esc(id)+'</b><small style="display:block">'+esc(desc.slice(0,220))+'</small></td><td>'+fmt(c.published)+'</td><td>'+fmt(c.lastModified)+'</td><td>'+esc(c.vulnStatus||"—")+'</td><td><button class="action" onclick="viewNVDCVE(\''+esc(id)+'\')">Détails + historique</button></td></tr>'}).join("")+
+   '</tbody></table></div>':'<div class="empty">Aucune CVE trouvée dans NVD.</div>');
+ }catch(e){out.textContent="Recherche NVD impossible : "+e.message;}
+}
+async function viewNVDCVE(id){
+ const out=document.getElementById("nvdResults");out.textContent="Chargement du détail CVE et des historiques…";
+ try{
+  const r=await api("/api/cve/intelligence/"+encodeURIComponent(id));
+  const h=await api("/api/nvd/cves/"+encodeURIComponent(id)+"/history?page=1&page_size=10");
+  const c=r.nvd||{},m=c.metrics||{},metric=(m.cvssMetricV40||m.cvssMetricV31||m.cvssMetricV30||m.cvssMetricV2||[])[0]||{},cv=metric.cvssData||{};
+  const desc=(c.descriptions||[]).find(x=>x.lang==="en")?.value||(c.descriptions||[])[0]?.value||"";
+  const changes=h.cveChanges||h.changes||[],refs=(c.references||[]).slice(0,10);
+  out.innerHTML='<div class="event"><i class="dot"></i><div><strong>'+esc(c.id||id)+' · '+esc(c.vulnStatus||"Statut inconnu")+'</strong><small>Publiée : '+fmt(c.published)+' · Modifiée : '+fmt(c.lastModified)+'</small><p class="notice">'+esc(desc)+'</p><p class="notice">CVSS '+esc(cv.baseSeverity||"—")+' · '+(cv.baseScore==null?"Score indisponible":Number(cv.baseScore).toFixed(1)+"/10")+' · '+esc(cv.vectorString||"")+'</p><p class="notice">CWE : '+esc((c.weaknesses||[]).flatMap(x=>(x.description||[]).map(y=>y.value)).join(", ")||"—")+'</p></div></div>'+
+   '<div class="cardtitle">Configurations / produits affectés</div><pre class="notice" style="white-space:pre-wrap;overflow-wrap:anywhere">'+esc(JSON.stringify({affected:c.affected||[],configurations:c.configurations||[]},null,2).slice(0,7000))+'</pre>'+
+   '<div class="cardtitle">Références</div>'+(refs.length?refs.map(x=>'<div class="event"><i class="dot"></i><div><a href="'+esc(x.url)+'" target="_blank" rel="noopener">'+esc(x.url)+'</a><small>'+esc((x.tags||[]).join(", "))+'</small></div></div>').join(""):'<div class="empty">Aucune référence publiée.</div>')+
+   '<div class="cardtitle">Historique NVD ('+Number(h.totalResults||changes.length)+')</div>'+(changes.length?changes.map(x=>'<div class="event"><i class="dot"></i><div><strong>'+esc(x.eventName||"Modification")+'</strong><small>'+fmt(x.created)+' · '+esc(JSON.stringify(x.details||x).slice(0,500))+'</small></div></div>').join(""):'<div class="empty">Aucun changement retourné.</div>')+
+   '<div class="cardtitle">OpenCVE</div>'+(r.opencve?'<pre class="notice" style="white-space:pre-wrap;overflow-wrap:anywhere">'+esc(JSON.stringify({cve_id:r.opencve.cve_id,title:r.opencve.title,description:r.opencve.description,metrics:r.opencve.metrics,weaknesses:r.opencve.weaknesses,vendors:r.opencve.vendors,history:r.opencve_history?.results||[]},null,2).slice(0,5000))+'</pre>':'<div class="empty">OpenCVE indisponible : '+esc(r.opencve_message||"jeton API non configuré")+'. Le détail NVD reste disponible.</div>');
+ }catch(e){out.textContent="Détail CVE indisponible : "+e.message;}
+}
+async function searchNVDCPE(){
+ const out=document.getElementById("nvdResults"),q=document.getElementById("nvdCpeQuery").value.trim();
+ if(!q){out.textContent="Saisis un éditeur ou un produit.";return;}
+ out.textContent="Recherche dans le dictionnaire CPE…";
+ try{
+  const d=await api("/api/nvd/cpes?q="+encodeURIComponent(q)+"&page=1&page_size=50"),rows=d.products||[];
+  out.innerHTML='<p class="notice">'+Number(d.totalResults||rows.length)+' entrée(s) · dictionnaire NVD CPE</p>'+
+   (rows.length?'<div class="tablewrap"><table><thead><tr><th>CPE 2.3</th><th>Titres éditeur / produit</th><th>Identifiant</th></tr></thead><tbody>'+
+   rows.map(x=>{const c=x.cpe||{};return '<tr><td><code>'+esc(c.cpeName||"—")+'</code></td><td>'+esc((c.titles||[]).map(y=>y.title).join("; ")||"—")+'</td><td>'+esc(c.cpeNameId||"—")+'</td></tr>'}).join("")+
+   '</tbody></table></div>':'<div class="empty">Aucun CPE trouvé.</div>');
+ }catch(e){out.textContent="Recherche CPE impossible : "+e.message;}
+}
+async function searchNVDCPEMatches(){
+ const out=document.getElementById("nvdResults"),q=document.getElementById("nvdMatchQuery").value.trim();
+ if(!q){out.textContent="Saisis une chaîne CPE 2.3, par exemple cpe:2.3:a:apache:http_server:*.";return;}
+ out.textContent="Recherche des critères CPE…";
+ try{
+  const d=await api("/api/nvd/cpe-matches?q="+encodeURIComponent(q)+"&page=1&page_size=50"),rows=d.matchStrings||[];
+  out.innerHTML='<p class="notice">'+Number(d.totalResults||rows.length)+' critère(s) · NVD CPE Match</p>'+
+   (rows.length?'<div class="tablewrap"><table><thead><tr><th>Critère</th><th>Plage de versions</th><th>Statut</th><th>Correspondances</th></tr></thead><tbody>'+
+   rows.map(x=>{const m=x.matchString||{};return '<tr><td><code>'+esc(m.criteria||"—")+'</code></td><td>'+esc([m.versionStartIncluding,m.versionStartExcluding,m.versionEndIncluding,m.versionEndExcluding].filter(Boolean).join(" · ")||"Non précisée")+'</td><td>'+esc(m.status||"—")+'</td><td>'+Number((m.matches||[]).length)+'</td></tr>'}).join("")+
+   '</tbody></table></div>':'<div class="empty">Aucun critère de correspondance trouvé.</div>');
+ }catch(e){out.textContent="Recherche CPE Match impossible : "+e.message;}
+}
+async function exportAssetsCSV(){
+ try{
+  const {data}=await sb.auth.getSession(),token=data.session?.access_token||"";
+  if(!token)throw new Error("Session expirée. Reconnecte-toi.");
+  const response=await fetch((window.CSV_API_BASE||"").replace(/\\/$/,"")+"/api/reports/export.csv",{headers:{Authorization:"Bearer "+token}});
+  if(!response.ok)throw new Error((await response.text()).slice(0,180));
+  const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
+  link.href=url;link.download="congo-sec-vision-assets.csv";document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
+  toast("Export CSV téléchargé.");
+ }catch(e){toast("Export impossible : "+e.message);}
+}
 async function loadOpenCVEStatus(){
  const badge=document.getElementById("opencveStatus"),out=document.getElementById("opencveResults");
  if(badge)badge.textContent="Vérification…";
@@ -229,7 +297,7 @@ async function loadHypervisors(){
 async function checkHypervisorConnections(){const out=document.getElementById("hvCheckResult");out.textContent="Vérification en lecture seule en cours…";try{const r=await api("/api/hypervisors/providers/check",{method:"POST"});out.innerHTML=r.results.map(x=>'<span class="tag">'+esc(x.provider)+' · '+(x.status==="reachable"?'Connecté · '+x.machines+' VM':x.status==="no-data"?'Collecteur prêt · en attente des données':x.status==="not-configured"?'Non configuré':'Erreur : '+esc(x.message||"connexion impossible"))+'</span>').join(" ");toast("Vérification terminée — aucune donnée enregistrée");}catch(e){out.textContent="Vérification impossible : "+e.message;toast(e.message)}}async function syncHypervisors(){const result=document.getElementById("hvResult");result.textContent="Synchronisation en cours…";try{const r=await api("/api/hypervisors/sync",{method:"POST"});result.textContent=r.results.map(function(x){return x.provider+": "+(x.status==="ok"?x.discovered+" détectée(s), "+x.saved+" enregistrée(s)":x.status==="not-configured"?"non configuré":x.message)}).join(" · ");toast("Synchronisation terminée");await loadHypervisors();}catch(e){result.textContent="Échec : "+e.message;toast("Échec de synchronisation");}}
 async function loadNetwork(){try{const rows=await api("/api/network/discovery");document.getElementById("networkRows").innerHTML=rows.length?'<div class="tablewrap"><table><thead><tr><th>Adresse IP</th><th>Nom d’hôte</th><th>Réseau</th><th>Source</th><th>État</th><th>Dernière observation</th></tr></thead><tbody>'+rows.map(function(x){return '<tr><td><b>'+esc(x.ip_address)+'</b></td><td>'+esc(x.hostname||"—")+'</td><td>'+esc(x.cidr)+'</td><td>'+esc(x.source)+'</td><td>'+esc(x.status)+'</td><td>'+fmt(x.last_seen)+'</td></tr>'}).join("")+'</tbody></table></div>':'<div class="empty">Aucun hôte observé. Les agents peuvent remonter les hôtes joignables de leur sous-réseau privé.</div>';}catch(e){document.getElementById("networkRows").textContent="Erreur : "+e.message;}}
 async function scanNetwork(){const cidr=document.getElementById("networkCidr").value.trim(),out=document.getElementById("networkResult");if(!cidr){out.textContent="Saisis un réseau au format CIDR.";return;}out.textContent="Scan en cours…";try{const r=await api("/api/network/discovery",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cidr:cidr})});out.textContent=r.cidr+" · "+r.hosts_scanned+" adresses testées · "+r.hosts_reachable+" hôte(s) joignable(s).";await loadNetwork();}catch(e){out.textContent="Échec : "+e.message;}}
-function showPage(p){if(p==="vulns"){loadCVE();loadOpenCVEStatus()}if(p==="hypervisors")loadHypervisors();if(p==="network")loadNetwork();if(p==="incidents")loadIncidents();if(p==="automation")loadAutomation();if(p==="team")loadTeam();if(p==="audit")loadAudit();if(p==="ai")loadAIFindings();if(p==="topology")loadTopology();document.querySelectorAll(".page").forEach(x=>x.classList.remove("active"));document.getElementById(p).classList.add("active");document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("active",x.dataset.page===p));document.getElementById("crumb").textContent=document.querySelector(`[data-page="${p}"]`).textContent.trim()}
+function showPage(p){if(p==="vulns"){loadCVE();loadOpenCVEStatus()}if(p==="hypervisors")loadHypervisors();if(p==="vulns"){loadNVDStatus();loadOpenCVEStatus()}if(p==="network")loadNetwork();if(p==="incidents")loadIncidents();if(p==="automation")loadAutomation();if(p==="team")loadTeam();if(p==="audit")loadAudit();if(p==="ai")loadAIFindings();if(p==="topology")loadTopology();document.querySelectorAll(".page").forEach(x=>x.classList.remove("active"));document.getElementById(p).classList.add("active");document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("active",x.dataset.page===p));document.getElementById("crumb").textContent=document.querySelector(`[data-page="${p}"]`).textContent.trim()}
 document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>showPage(b.dataset.page));setInterval(()=>{if(accessToken&&document.getElementById("auth").style.display==="none")refresh()},15000);
 
 async function loadIncidents(){
