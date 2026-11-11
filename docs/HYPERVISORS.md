@@ -11,7 +11,7 @@ The read-only connectors are wired to authenticated FastAPI routes and the Hyper
 | VirtualBox | Local VBoxManage list vms --long | API process runs on VirtualBox host |
 | Hyper-V | PowerShell inventory over WinRM HTTPS | API host can reach Windows Hyper-V host on TCP 5986 |
 
-VirtualBox is not treated as a generic REST API: its connector uses the host-side VBoxManage CLI. Hyper-V uses WinRM with HTTPS; do not expose WinRM to the public Internet.
+VirtualBox is not treated as a generic REST API: its connector uses the VBoxManage CLI on the same operating-system host as the API process. The current Docker image does not install VBoxManage and a container cannot execute a host-installed binary just because it exists on the Docker host. Therefore VirtualBox inventory is not available in the standard Docker deployment yet; do not mount host binaries or the VirtualBox kernel device as an ad-hoc workaround. It requires a separately designed and authenticated host-side collector, or running the API natively on the VirtualBox host. Hyper-V uses WinRM with HTTPS; do not expose WinRM to the public Internet.
 
 ## Server-side environment variables
 
