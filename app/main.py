@@ -8,6 +8,7 @@ from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
 from app.authz import get_user_roles
 from app.hypervisors import HypervisorError, configured_providers, inventory as collect_hypervisor_inventory
+from app.hypervisor_lab import lab_inventory as get_hypervisor_lab_inventory
 from app.network_discovery import discover_network, validate_network
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
@@ -996,6 +997,34 @@ def sync_hypervisor_inventory(authorization: str | None = Header(default=None)):
             outcomes.append({"provider": name, "status": "error", "saved": 0, "message": str(detail)[:240]})
     audit("hypervisor.inventory.sync", "all-providers", json.dumps(outcomes, ensure_ascii=False), actor)
     return {"results": outcomes, "read_only": True, "timestamp": now()}
+
+@app.get("/api/hypervisors/lab/inventory")
+def hypervisor_lab_inventory(authorization: str | None = Header(default=None)):
+    """Synthetic inventory is isolated from the live Supabase inventory."""
+    require_read(authorization)
+    return get_hypervisor_lab_inventory()
+
+
+@app.post("/api/hypervisors/providers/check")
+def check_hypervisor_providers(authorization: str | None = Header(default=None)):
+    """Probe configured providers with inventory-only requests; never persists results."""
+    actor = require_analyst(authorization)
+    outcomes = []
+    for provider in configured_providers():
+        name = provider["provider"]
+        if not provider["configured"]:
+            outcomes.append({"provider": name, "status": "not-configured", "machines": 0})
+            continue
+        try:
+            machines = collect_hypervisor_inventory(name)
+            outcomes.append({"provider": name, "status": "reachable", "machines": len(machines),
+                             "read_only": True})
+        except HypervisorError as exc:
+            outcomes.append({"provider": name, "status": "error", "machines": 0,
+                             "message": str(exc)[:200]})
+    audit("hypervisor.providers.check", "all-providers", json.dumps(outcomes, ensure_ascii=False), actor)
+    return {"results": outcomes, "read_only": True, "persisted": False, "timestamp": now()}
+
 
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
