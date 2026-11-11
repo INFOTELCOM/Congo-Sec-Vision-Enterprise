@@ -154,17 +154,20 @@ async function loadNVDStatus(){
  try{const x=await api("/api/nvd/status");if(badge)badge.textContent="NVD API 2.0 · "+(x.api_key_configured?"clé configurée":"mode prudent sans clé");}
  catch(e){if(badge)badge.textContent="NVD indisponible : "+e.message;}
 }
-async function searchNVD(){
+let nvdPage=1;
+async function searchNVD(page=1){
  const out=document.getElementById("nvdResults"),q=document.getElementById("nvdQuery").value.trim();
  if(!q){out.textContent="Saisis un identifiant CVE, un éditeur ou un produit.";return;}
  if(/^CVE-[0-9]{4}-[0-9]{4,}$/i.test(q)){await viewNVDCVE(q);return;}
- out.textContent="Interrogation de NVD API 2.0…";
+ nvdPage=Math.max(1,Number(page)||1);out.textContent="Interrogation de NVD API 2.0…";
  try{
-  const d=await api("/api/nvd/cves?q="+encodeURIComponent(q)+"&page=1&page_size=50"),rows=d.vulnerabilities||[];
-  out.innerHTML='<p class="notice">'+Number(d.totalResults||0).toLocaleString("fr-FR")+' CVE correspondante(s) · NVD API 2.0</p>'+
+  const d=await api("/api/nvd/cves?q="+encodeURIComponent(q)+"&page="+nvdPage+"&page_size=50"),rows=d.vulnerabilities||[];
+  const total=Number(d.totalResults||0),pageSize=Number(d.resultsPerPage||50);
+  out.innerHTML='<p class="notice">'+total.toLocaleString("fr-FR")+' CVE correspondante(s) · page '+nvdPage+' · NVD API 2.0</p>'+
    (rows.length?'<div class="tablewrap"><table><thead><tr><th>CVE</th><th>Publication</th><th>Dernière modification</th><th>Statut</th><th>Détail</th></tr></thead><tbody>'+
    rows.map(function(x){const c=x.cve||{},id=String(c.id||""),desc=(c.descriptions||[]).find(y=>y.lang==="en")?.value||"";return '<tr><td><b>'+esc(id)+'</b><small style="display:block">'+esc(desc.slice(0,220))+'</small></td><td>'+fmt(c.published)+'</td><td>'+fmt(c.lastModified)+'</td><td>'+esc(c.vulnStatus||"—")+'</td><td><button class="action" onclick="viewNVDCVE(\''+esc(id)+'\')">Détails + historique</button></td></tr>'}).join("")+
-   '</tbody></table></div>':'<div class="empty">Aucune CVE trouvée dans NVD.</div>');
+   '</tbody></table></div>':'<div class="empty">Aucune CVE trouvée dans NVD.</div>')+
+   '<div class="toolbar" style="margin-top:10px"><button class="ghost" '+(nvdPage<=1?'disabled':'')+' onclick="searchNVD('+(nvdPage-1)+')">Page précédente</button><button class="ghost" '+(nvdPage*pageSize>=total?'disabled':'')+' onclick="searchNVD('+(nvdPage+1)+')">Page suivante</button></div>';
  }catch(e){out.textContent="Recherche NVD impossible : "+e.message;}
 }
 async function viewNVDCVE(id){
