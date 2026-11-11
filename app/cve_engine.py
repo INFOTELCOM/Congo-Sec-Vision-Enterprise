@@ -160,10 +160,22 @@ def _severity(cve: dict[str, Any]) -> tuple[str, float | None, str, dict[str, An
         metric = rows[0]
         data = metric.get("cvssData") or {}
         score = data.get("baseScore")
-        severity = str(data.get("baseSeverity") or metric.get("baseSeverity") or "unknown").lower()
+        numeric_score = float(score) if score is not None else None
+        severity = str(data.get("baseSeverity") or metric.get("baseSeverity") or "").lower()
         if severity not in SEVERITY_ORDER:
-            severity = "unknown"
-        return severity, float(score) if score is not None else None, version, data
+            if numeric_score is None:
+                severity = "unknown"
+            elif numeric_score >= 9.0:
+                severity = "critical"
+            elif numeric_score >= 7.0:
+                severity = "high"
+            elif numeric_score >= 4.0:
+                severity = "medium"
+            elif numeric_score > 0:
+                severity = "low"
+            else:
+                severity = "unknown"
+        return severity, numeric_score, version, data
     return "unknown", None, "", {}
 
 
@@ -307,6 +319,6 @@ def scan_product(name: str, version: str, vendor: str, api_key: str = "",
             "epss_percentile": (epss.get(cve_id) or {}).get("percentile"),
             "known_exploited": cve_id in kev,
             "cve_url": "https://nvd.nist.gov/vuln/detail/" + cve_id,
-            "sources": ["NVD", "FIRST EPSS"] if cve_id in epss else ["NVD"],
+            "sources": ["NVD"] + (["FIRST EPSS"] if cve_id in epss else []) + (["CISA KEV"] if cve_id in kev else []),
         })
     return output
