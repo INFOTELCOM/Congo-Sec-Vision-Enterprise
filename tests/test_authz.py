@@ -6,6 +6,13 @@ class SupabaseAuthorizationTests(unittest.TestCase):
     def test_admin_role_is_accepted_from_app_metadata(self):
         self.assertTrue(is_admin_user({"app_metadata": {"role": "admin"}}))
 
+    def test_legacy_csv_role_claim_is_accepted(self):
+        self.assertTrue(is_admin_user({"app_metadata": {"csv_role": "admin"}}))
+        self.assertEqual(
+            get_user_roles({"app_metadata": {"csv_role": "incident_responder"}}),
+            frozenset({"incident_responder"}),
+        )
+
     def test_owner_is_normalized_to_admin(self):
         self.assertTrue(is_admin_user({"app_metadata": {"roles": ["owner"]}}))
 
