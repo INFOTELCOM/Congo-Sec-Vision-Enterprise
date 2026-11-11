@@ -67,3 +67,19 @@ Enable and firewall WinRM HTTPS deliberately. Use a certificate trusted by the A
 ## Integration boundary
 
 The connector library, API routes, dashboard, tests, and additive Supabase migration are included. No live hypervisor has been connected yet because provider endpoints and read-only credentials must be configured on the API host. The complete historical SQLite-to-PostgreSQL migration is not included: each legacy data domain needs an export, schema mapping, reconciliation, backup, and rollback plan. Production deployment is not performed from this feature branch.
+
+
+## Isolated simulation mode
+
+The API includes an optional synthetic inventory to validate the dashboard without connecting to a real hypervisor.
+
+- Set `CSV_HYPERVISOR_LAB_MODE=true` in the API server `.env` to enable it; it is disabled by default.
+- Read it with `GET /api/hypervisors/lab/inventory` (authenticated user required).
+- Every synthetic record is marked `simulated=true`, `source=simulation`, `read_only=true`, and uses a `lab-` ID.
+- Synthetic records are returned separately from `GET /api/hypervisors/inventory` and are never passed to the Supabase upsert route.
+- The dashboard labels the section as simulation and does not merge the simulated records into real inventory totals.
+- Disable the feature with `CSV_HYPERVISOR_LAB_MODE=false` and restart the API.
+
+## Testing real provider connectivity
+
+`POST /api/hypervisors/providers/check` requires an analyst/admin session. It performs only provider inventory reads, reports reachable/not-configured/error and the number of VMs returned, and explicitly reports `persisted=false`. It does not synchronize or modify any VM. A provider can only be reported as reachable when its endpoint and read-only credentials are configured on the API host. Unit tests use mocks; they do not validate a live hypervisor.
