@@ -276,7 +276,9 @@ def search_nvd(keyword: str, api_key: str = "", published_after: str | None = No
         if not batch or start >= total:
             break
         # NVD rate limits unauthenticated clients more aggressively.
-        time.sleep(float(os.getenv("NVD_REQUEST_INTERVAL_SECONDS", "6.1" if not api_key else "0.7")))
+        configured_interval = os.getenv("NVD_REQUEST_INTERVAL_SECONDS", "").strip()
+        default_interval = "6.1" if not api_key else "0.7"
+        time.sleep(max(0.0, float(configured_interval or default_interval)))
     return {"vulnerabilities": collected, "totalResults": total or 0,
             "pagesFetched": pages, "truncated": bool(total is not None and len(collected) < total)}
 
