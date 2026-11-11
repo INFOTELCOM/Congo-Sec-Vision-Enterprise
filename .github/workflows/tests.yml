@@ -1,7 +1,7 @@
 name: Backend tests
 on:
   push:
-    branches: [main]
+    branches: [main, feat/production-vulnerability-intelligence]
   pull_request:
     branches: [main]
   workflow_dispatch:
