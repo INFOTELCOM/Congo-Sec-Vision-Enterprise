@@ -110,7 +110,13 @@ Les alertes actuellement implémentées sont des notifications internes à la co
 
 ### Autoriser un administrateur Supabase
 
-Les routes SOC privilégiées exigent maintenant un rôle défini côté serveur dans `app_metadata`. Sur le compte administrateur uniquement, définir dans Supabase Auth `app_metadata.role = "admin"` (ou `app_metadata.roles = ["admin"]`). Ne pas placer ce rôle dans `user_metadata`, qui est modifiable par l'utilisateur. Les comptes sans rôle administrateur reçoivent HTTP 403. Prévoir un compte de secours et tester le rôle avant le déploiement.
+Les routes SOC exigent un rôle défini côté serveur dans `app_metadata`. Attribuer explicitement l'un des rôles suivants dans Supabase Auth (champ `app_metadata.role`, ou tableau `app_metadata.roles`) :
+- `admin` : administration complète, audit, équipe, workflows et validations ;
+- `analyst` : lecture SOC, synchronisation et triage CVE, analyse IA, événements, diagnostics, incidents et export ;
+- `viewer` : lecture seule des données SOC ;
+- `incident_responder` : lecture SOC, gestion des incidents et demandes d'approbation.
+
+Le rôle `owner` est normalisé en `admin`. Ne jamais placer ces rôles dans `user_metadata`, qui est modifiable par l'utilisateur. Les comptes sans rôle reconnu reçoivent HTTP 403. Les permissions sont vérifiées côté API à chaque requête ; le registre local de l'équipe ne confère aucun droit d'accès. Prévoir un compte administrateur de secours et tester chaque profil avant le déploiement.
 
 ### Synchronisation
 
