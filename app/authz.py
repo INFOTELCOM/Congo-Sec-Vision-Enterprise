@@ -10,9 +10,12 @@ def get_user_roles(user: dict) -> frozenset[str]:
         return frozenset()
 
     raw_roles = []
-    role = metadata.get("role")
-    if isinstance(role, str):
-        raw_roles.append(role)
+    # csv_role is the legacy claim used by PR #12; role/roles are the
+    # canonical claims used by the CVE/RBAC branch. All are server-controlled.
+    for key in ("csv_role", "role"):
+        role = metadata.get(key)
+        if isinstance(role, str):
+            raw_roles.append(role)
     roles = metadata.get("roles") or []
     if isinstance(roles, (list, tuple, set)):
         raw_roles.extend(item for item in roles if isinstance(item, str))
