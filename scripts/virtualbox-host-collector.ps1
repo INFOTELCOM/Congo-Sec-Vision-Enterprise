@@ -34,11 +34,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $machines = @()
-$blocks = [regex]::Split(($raw -join "`n"), "`r?`ns*`r?`n")
+$blocks = [regex]::Split(($raw -join [Environment]::NewLine), '\r?\n\s*\r?\n')
 foreach ($block in $blocks) {
     $values = @{}
-    foreach ($line in ($block -split "`r?`n")) {
-        if ($line -match '^s*([^:]+):s*(.*?)s*$') {
+    foreach ($line in ($block -split '\r?\n')) {
+        if ($line -match '^\s*([^:]+):\s*(.*?)\s*$') {
             $values[$matches[1].Trim()] = $matches[2].Trim()
         }
     }
@@ -47,13 +47,16 @@ foreach ($block in $blocks) {
     $state = [string]$values["State"]
     if ($state -match '^([^(]+)') { $state = $matches[1].Trim() }
     $memory = $null
-    if ($values["Memory size"] -match '(d+)') { $memory = [int]$matches[1] }
+    if ($values["Memory size"] -match '(\d+)') { $memory = [int]$matches[1] }
     $cpu = $null
-    if ($values["Number of CPUs"] -match '(d+)') { $cpu = [int]$matches[1] }
+    if ($values["Number of CPUs"] -match '(\d+)') { $cpu = [int]$matches[1] }
+
+    $vmName = [string]$values["UUID"]
+    if ($values["Name"]) { $vmName = [string]$values["Name"] }
 
     $machines += @{
         id = [string]$values["UUID"]
-        name = if ($values["Name"]) { [string]$values["Name"] } else { [string]$values["UUID"] }
+        name = $vmName
         state = $state
         metadata = @{
             guest_os = [string]$values["Guest OS"]
