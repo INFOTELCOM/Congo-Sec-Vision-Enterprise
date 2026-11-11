@@ -212,6 +212,32 @@ def index(): return FileResponse("app/static/index.html")
 @app.get("/health")
 @app.get("/api/health")
 def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"0.3.1","time":now()}
+
+@app.get("/api/health/ready")
+def readiness():
+    database_ok = False
+    last_sync = None
+    try:
+        with conn() as c:
+            c.execute("SELECT 1")
+            row = c.execute("SELECT value FROM system_settings WHERE key='last_cve_sync'").fetchone()
+            last_sync = row["value"] if row else None
+            database_ok = True
+    except Exception:
+        database_ok = False
+    task = getattr(app.state, "cve_task", None)
+    worker_running = bool(task is not None and not task.done())
+    checks = {
+        "database": "ok" if database_ok else "error",
+        "cve_worker": "running" if worker_running else "not-running",
+        "last_cve_sync_attempt": last_sync,
+        "cve_sync_interval_minutes": max(
+            5,
+            int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",
+                          str(max(5, int(float(os.getenv("CVE_SYNC_INTERVAL_HOURS", "0.25")) * 60)))))
+        ),
+    }
+    return {"status": "ready" if database_ok and worker_running else "degraded", "checks": checks}
 @app.post("/api/auth/check")
 def auth_check(authorization: str|None=Header(default=None)):
     require_read(authorization); return {"authenticated":True}
