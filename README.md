@@ -4,7 +4,7 @@ Version source : 0.5.1 (API 0.3.1 / Android 0.4.1)
 
 API FastAPI, console web, agents Windows/Linux et application Android native Java.
 
-> **État :** branche d'amélioration en validation. Les routes SOC privilégiées vérifient une session Supabase et un rôle serveur `app_metadata.role=admin`. Le RBAC granulaire, MFA, PostgreSQL et les contrôles de production restent à achever. Ne pas exposer l'API directement sur Internet.
+> **État :** branche d'amélioration en validation. Les routes SOC vérifient une session Supabase et des rôles serveur dans `app_metadata` (`admin`, `analyst`, `viewer`, `incident_responder`). MFA, PostgreSQL et plusieurs contrôles de production restent à achever. Ne pas exposer l'API directement sur Internet.
 
 ## Arborescence
 - `app/` : API FastAPI et interface web servie par l'API.
@@ -50,7 +50,7 @@ python -m unittest discover -s tests -v
 
 ## Limites connues
 - SQLite convient au laboratoire ; PostgreSQL, sauvegardes et migrations sont à prévoir pour une exploitation durable.
-- Rôle administrateur Supabase requis pour les routes privilégiées ; MFA et permissions granulaires par rôle restent à configurer.
+- Rôles Supabase granulaires appliqués côté API ; MFA et vérification du niveau d'assurance AAL2 restent à intégrer.
 - Les rôles d'équipe sont informatifs.
 - Les approbations n'exécutent aucune commande.
 - Les correspondances NVD et constats de détection sont des signaux à valider, pas des preuves automatiques.
