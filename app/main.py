@@ -205,6 +205,7 @@ def asset_json(a, online=None):
       "ip_addresses":json.loads(a["ip_addresses"]),"first_seen":a["first_seen"],"last_seen":a["last_seen"],
       "online":online,"cpu_percent":inv.get("cpu_percent"),"memory_percent":inv.get("memory_percent"),
       "disk_percent":inv.get("disk_percent"),"agent_version":inv.get("agent_version"),
+      "virtualization":inv.get("virtualization",{"is_virtual_machine":False,"provider":None}),
       "interfaces":inv.get("interfaces",[])}
 
 @app.get("/")
