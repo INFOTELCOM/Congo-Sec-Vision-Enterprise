@@ -699,7 +699,9 @@ async def create_event(request:Request,authorization:str|None=Header(default=Non
     audit("event.create", d.get("asset_id",""), d.get("message",""))
     return {"created":True}
 @app.get("/api/config")
-def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD + OpenCVE","cve_automatic_sync":True,"nvd_api_key_configured":bool(NVD_API_KEY),"opencve_configured":bool(OPENCVE_API_TOKEN),"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"cve_sync_interval_minutes":max(5,int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",str(max(5,int(float(os.getenv("CVE_SYNC_INTERVAL_HOURS","0.25"))*60)))))),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
+def config(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD + OpenCVE","cve_automatic_sync":True,"nvd_api_key_configured":bool(NVD_API_KEY),"opencve_configured":bool(OPENCVE_API_TOKEN),"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"cve_sync_interval_minutes":max(5,int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",str(max(5,int(float(os.getenv("CVE_SYNC_INTERVAL_HOURS","0.25"))*60)))))),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
 
 
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
