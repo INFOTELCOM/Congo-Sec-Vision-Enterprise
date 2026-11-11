@@ -119,5 +119,18 @@ class HypervisorReadOnlySafetyTests(unittest.TestCase):
         self.assertNotRegex(command, r"(?i)\b(Start|Stop|Remove|Set)-VM\b")
 
 
+    @patch.dict("os.environ", {
+        "CSV_VBOXMANAGE_PATH": "VBoxManage",
+        "CSV_VBOX_COLLECTOR_TOKEN": "host-collector-test-token",
+    }, clear=False)
+    @patch("app.hypervisors.shutil.which", return_value=None)
+    def test_virtualbox_is_configured_when_windows_host_collector_is_enabled(self, _which):
+        from app.hypervisors import configured_providers
+        provider = next(x for x in configured_providers() if x["provider"] == "virtualbox")
+        self.assertTrue(provider["configured"])
+        self.assertTrue(provider["host_collector"])
+        self.assertEqual(provider["mode"], "read-only")
+
+
 if __name__ == "__main__":
     unittest.main()
