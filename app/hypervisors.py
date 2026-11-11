@@ -39,22 +39,45 @@ def _normal_vm(provider: str, source_id: str, name: str, state: str, **metadata:
             "state": str(state or "unknown").lower(), "read_only": True, "metadata": metadata}
 
 def configured_providers() -> list[dict[str, Any]]:
+    """Expose configuration readiness without ever returning credentials or secret values."""
     specs = [
-        ("vmware", ("CSV_VMWARE_URL", "CSV_VMWARE_USERNAME", "CSV_VMWARE_PASSWORD")),
-        ("proxmox", ("CSV_PROXMOX_URL", "CSV_PROXMOX_TOKEN_ID", "CSV_PROXMOX_TOKEN_SECRET")),
-        ("virtualbox", ("CSV_VBOXMANAGE_PATH",)),
-        ("hyperv", ("CSV_HYPERV_HOST", "CSV_HYPERV_USERNAME", "CSV_HYPERV_PASSWORD")),
+        ("vmware", ("CSV_VMWARE_URL", "CSV_VMWARE_USERNAME", "CSV_VMWARE_PASSWORD"),
+         "vCenter/vSphere REST API over HTTPS. Use a dedicated read-only service account."),
+        ("proxmox", ("CSV_PROXMOX_URL", "CSV_PROXMOX_TOKEN_ID", "CSV_PROXMOX_TOKEN_SECRET"),
+         "Proxmox VE API over HTTPS. Use a dedicated API token with Datacenter.Audit privileges."),
+        ("virtualbox", ("CSV_VBOXMANAGE_PATH",),
+         "On Windows + WSL/Docker, run the Windows VBoxManage host collector; do not install VirtualBox inside the API container."),
+        ("hyperv", ("CSV_HYPERV_HOST", "CSV_HYPERV_USERNAME", "CSV_HYPERV_PASSWORD"),
+         "Hyper-V PowerShell inventory over WinRM HTTPS (5986). Use a restricted account that can read VM inventory."),
     ]
     result = []
-    for provider, required in specs:
-        ready = all(_env(key) for key in required)
+    for provider, required, note in specs:
+        missing = [key for key in required if not _env(key)]
+        configured = not missing
         host_collector = False
         if provider == "virtualbox":
+            executable = _env("CSV_VBOXMANAGE_PATH", "VBoxManage")
+            local_binary = bool(shutil.which(executable))
             host_collector = bool(_env("CSV_VBOX_COLLECTOR_TOKEN"))
-            ready = bool(shutil.which(_env("CSV_VBOXMANAGE_PATH", "VBoxManage"))) or host_collector
-        result.append({"provider": provider, "configured": ready, "mode": "read-only",
-                       "host_collector": host_collector if provider == "virtualbox" else False})
+            configured = local_binary or host_collector
+            missing = [] if configured else ["CSV_VBOX_COLLECTOR_TOKEN (Windows host collector)"]
+        result.append({
+            "provider": provider,
+            "configured": configured,
+            "mode": "read-only",
+            "host_collector": host_collector if provider == "virtualbox" else False,
+            "required_variables": list(required) + (
+                ["CSV_VBOX_COLLECTOR_TOKEN"] if provider == "virtualbox" else []
+            ),
+            "missing_variables": missing,
+            "connection_type": (
+                "windows-host-collector" if provider == "virtualbox" and host_collector
+                else "api" if provider != "virtualbox" else "local-command"
+            ),
+            "setup_note": note,
+        })
     return result
+
 
 class VMwareConnector:
     def inventory(self) -> list[dict[str, Any]]:
@@ -62,6 +85,8 @@ class VMwareConnector:
         username, password = _env("CSV_VMWARE_USERNAME"), _env("CSV_VMWARE_PASSWORD")
         if not (base and username and password):
             raise HypervisorError("VMware connector is not configured")
+        if not base.startswith("https://"):
+            raise HypervisorError("VMware vCenter URL must use HTTPS; plaintext credential transmission is refused")
         verify = _bool_env("CSV_VMWARE_VERIFY_TLS", True)
         basic = base64.b64encode(f"{username}:{password}".encode()).decode()
         _, body = _request(base + "/api/session", method="POST",
@@ -90,6 +115,8 @@ class ProxmoxConnector:
         base = _env("CSV_PROXMOX_URL").rstrip("/")
         token_id, secret = _env("CSV_PROXMOX_TOKEN_ID"), _env("CSV_PROXMOX_TOKEN_SECRET")
         if not (base and token_id and secret): raise HypervisorError("Proxmox connector is not configured")
+        if not base.startswith("https://"):
+            raise HypervisorError("Proxmox URL must use HTTPS; plaintext API token transmission is refused")
         raw = _json_request(base + "/api2/json/cluster/resources?type=vm",
             headers={"Authorization": f"PVEAPIToken={token_id}={secret}", "Accept": "application/json"},
             verify_tls=_bool_env("CSV_PROXMOX_VERIFY_TLS", True))
@@ -142,6 +169,8 @@ class HyperVConnector:
         endpoint = host if host.startswith(("http://", "https://")) else f"https://{host}:5986/wsman"
         if not endpoint.startswith("https://"):
             raise HypervisorError("Hyper-V WinRM must use HTTPS; plaintext HTTP is refused")
+        if not endpoint.rstrip("/").lower().endswith("/wsman"):
+            endpoint = endpoint.rstrip("/") + "/wsman"
         try: import winrm
         except ImportError: raise HypervisorError("Hyper-V connector requires pywinrm") from None
         try:
