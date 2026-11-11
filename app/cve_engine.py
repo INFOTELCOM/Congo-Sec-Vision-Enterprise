@@ -335,3 +335,114 @@ def scan_product(name: str, version: str, vendor: str, api_key: str = "",
             "sources": ["NVD"] + (["FIRST EPSS"] if cve_id in epss else []) + (["CISA KEV"] if cve_id in kev else []),
         })
     return output
+
+
+# --- Direct NVD API v2 exploration endpoints used by the SOC UI ---
+NVD_CPE_URL = "https://services.nvd.nist.gov/rest/json/cpes/2.0"
+NVD_CPE_MATCH_URL = "https://services.nvd.nist.gov/rest/json/cpematch/2.0"
+NVD_CVE_HISTORY_URL = "https://services.nvd.nist.gov/rest/json/cvehistory/2.0"
+CVE_ID_PATTERN = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,}$", re.IGNORECASE)
+
+
+def search_nvd_catalog(
+    *, keyword: str = "", cve_id: str = "", cpe_name: str = "",
+    vuln_status: str = "", has_kev: bool | None = None,
+    page: int = 1, page_size: int = 50, api_key: str = "",
+) -> dict[str, Any]:
+    """One bounded page of NVD CVE 2.0 results for interactive analyst searches."""
+    keyword = str(keyword or "").strip()
+    cve_id = str(cve_id or "").strip().upper()
+    cpe_name = str(cpe_name or "").strip()
+    vuln_status = str(vuln_status or "").strip()
+    if len(keyword) > 200:
+        raise ValueError("La recherche NVD est limitée à 200 caractères.")
+    if cve_id and not CVE_ID_PATTERN.fullmatch(cve_id):
+        raise ValueError("Identifiant CVE invalide.")
+    if len(cpe_name) > 255 or (cpe_name and not cpe_name.startswith("cpe:2.3:")):
+        raise ValueError("Le nom CPE doit être un identifiant CPE 2.3 valide.")
+    if vuln_status and vuln_status not in {
+        "Awaiting Analysis", "Analyzed", "Modified", "Deferred", "Rejected",
+        "Undergoing Analysis"
+    }:
+        raise ValueError("Statut NVD non pris en charge.")
+    page = max(1, min(int(page), 10000))
+    page_size = max(1, min(int(page_size), 2000))
+    params: dict[str, Any] = {
+        "resultsPerPage": page_size,
+        "startIndex": (page - 1) * page_size,
+    }
+    if cve_id:
+        params["cveId"] = cve_id
+    elif keyword:
+        params["keywordSearch"] = keyword
+    if cpe_name:
+        params["cpeName"] = cpe_name
+    if vuln_status:
+        params["vulnStatus"] = vuln_status
+    if has_kev is not None:
+        params["hasKev"] = str(bool(has_kev)).lower()
+    return _request_json(NVD_CVE_URL + "?" + urllib.parse.urlencode(params), api_key=api_key)
+
+
+def get_nvd_cve(cve_id: str, api_key: str = "") -> dict[str, Any]:
+    """Fetch one CVE record from the current NVD 2.0 endpoint."""
+    cve_id = str(cve_id or "").strip().upper()
+    if not CVE_ID_PATTERN.fullmatch(cve_id):
+        raise ValueError("Identifiant CVE invalide.")
+    payload = _request_json(
+        NVD_CVE_URL + "?" + urllib.parse.urlencode({"cveId": cve_id, "resultsPerPage": 1}),
+        api_key=api_key,
+    )
+    rows = payload.get("vulnerabilities") or []
+    if not rows:
+        raise LookupError("Cette CVE n'existe pas dans le catalogue NVD.")
+    return rows[0].get("cve") or {}
+
+
+def get_nvd_cve_history(
+    cve_id: str, *, page: int = 1, page_size: int = 20, api_key: str = "",
+) -> dict[str, Any]:
+    """Read NVD CVE change history without depending on the retired v1 API."""
+    cve_id = str(cve_id or "").strip().upper()
+    if not CVE_ID_PATTERN.fullmatch(cve_id):
+        raise ValueError("Identifiant CVE invalide.")
+    page = max(1, min(int(page), 10000))
+    page_size = max(1, min(int(page_size), 2000))
+    params = urllib.parse.urlencode({
+        "cveId": cve_id,
+        "resultsPerPage": page_size,
+        "startIndex": (page - 1) * page_size,
+    })
+    return _request_json(NVD_CVE_HISTORY_URL + "?" + params, api_key=api_key)
+
+
+def search_nvd_cpes(keyword: str, *, page: int = 1, page_size: int = 50,
+                    api_key: str = "") -> dict[str, Any]:
+    """Search the official NVD CPE dictionary for a vendor/product phrase."""
+    keyword = str(keyword or "").strip()
+    if not keyword or len(keyword) > 160:
+        raise ValueError("Saisis une recherche CPE de 1 à 160 caractères.")
+    page = max(1, min(int(page), 10000))
+    page_size = max(1, min(int(page_size), 10000))
+    params = urllib.parse.urlencode({
+        "keywordSearch": keyword,
+        "resultsPerPage": page_size,
+        "startIndex": (page - 1) * page_size,
+    })
+    return _request_json(NVD_CPE_URL + "?" + params, api_key=api_key)
+
+
+def search_nvd_cpe_matches(match_string: str, *, page: int = 1, page_size: int = 50,
+                           api_key: str = "") -> dict[str, Any]:
+    """Search NVD CPE applicability match criteria, not only dictionary CPE names."""
+    match_string = str(match_string or "").strip()
+    if not match_string.startswith("cpe:2.3:") or len(match_string) > 255:
+        raise ValueError("Saisis une chaîne CPE 2.3 de 1 à 255 caractères.")
+    page = max(1, min(int(page), 10000))
+    page_size = max(1, min(int(page_size), 500))
+    params = urllib.parse.urlencode({
+        "matchStringSearch": match_string,
+        "resultsPerPage": page_size,
+        "startIndex": (page - 1) * page_size,
+    })
+    return _request_json(NVD_CPE_MATCH_URL + "?" + params, api_key=api_key)
