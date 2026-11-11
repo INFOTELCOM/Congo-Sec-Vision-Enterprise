@@ -91,7 +91,7 @@ def init():
             "cwe_ids":"TEXT DEFAULT '[]'","cpe_matches":"TEXT DEFAULT '[]'","references_json":"TEXT DEFAULT '[]'",
             "epss_score":"REAL","epss_percentile":"REAL","known_exploited":"INTEGER NOT NULL DEFAULT 0",
             "published_at":"TEXT DEFAULT ''","last_modified_at":"TEXT DEFAULT ''","vuln_status":"TEXT DEFAULT ''",
-            "sources_json":"TEXT DEFAULT '[]'","assigned_to":"TEXT DEFAULT ''","tags_json":"TEXT DEFAULT '[]'"
+            "sources_json":"TEXT DEFAULT '[]'","ssvc_json":"TEXT DEFAULT '[]'","affected_json":"TEXT DEFAULT '[]'","assigned_to":"TEXT DEFAULT ''","tags_json":"TEXT DEFAULT '[]'"
         }.items():
             if col not in vuln_cols: c.execute("ALTER TABLE vulnerabilities ADD COLUMN "+col+" "+ddl)
         c.execute("CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
@@ -297,7 +297,7 @@ def vulnerabilities(severity: str|None=None, vendor: str|None=None, product: str
     result=[]
     for row in rows:
         item=dict(row)
-        for field in ("cwe_ids","cpe_matches","references_json","sources_json","tags_json"):
+        for field in ("cwe_ids","cpe_matches","references_json","sources_json","ssvc_json","affected_json","tags_json"):
             try: item[field.removesuffix("_json") if field.endswith("_json") else field]=json.loads(item.get(field) or "[]")
             except (TypeError,ValueError): item[field.removesuffix("_json") if field.endswith("_json") else field]=[]
         result.append(item)
@@ -411,12 +411,13 @@ def run_cve_sync(limit=25):
                       json.dumps(v.get('cwe_ids',[])),json.dumps(v.get('cpe_matches',[])),
                       json.dumps(v.get('references',[])),v.get('epss_score'),v.get('epss_percentile'),
                       1 if v.get('known_exploited') else 0,v.get('published',''),v.get('last_modified',''),
-                      v.get('vuln_status',''),json.dumps(v.get('sources',[])))
+                      v.get('vuln_status',''),json.dumps(v.get('sources',[])),
+                      json.dumps(v.get('ssvc',[])),json.dumps(v.get('affected',[])))
                     if old:
                         c.execute("""UPDATE vulnerabilities SET severity=?,title=?,software_name=?,software_version=?,vendor=?,
                           match_confidence=?,cve_url=?,cvss_score=?,cvss_version=?,cvss_vector=?,cwe_ids=?,cpe_matches=?,
                           references_json=?,epss_score=?,epss_percentile=?,known_exploited=?,published_at=?,last_modified_at=?,
-                          vuln_status=?,sources_json=? WHERE id=?""",values+(old['id'],)); refreshed+=1
+                          vuln_status=?,sources_json=?,ssvc_json=?,affected_json=? WHERE id=?""",values+(old['id'],)); refreshed+=1
                         changed = (
                           old['severity'] != v['severity'] or old['title'] != v['title'] or
                           old['match_confidence'] != v['match_confidence'] or
@@ -431,7 +432,7 @@ def run_cve_sync(limit=25):
                         cur=c.execute("""INSERT INTO vulnerabilities(asset_id,cve_id,severity,title,status,source,created_at,
                           software_name,software_version,vendor,match_confidence,cve_url,cvss_score,cvss_version,cvss_vector,
                           cwe_ids,cpe_matches,references_json,epss_score,epss_percentile,known_exploited,published_at,
-                          last_modified_at,vuln_status,sources_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                          last_modified_at,vuln_status,sources_json,ssvc_json,affected_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                           (p['asset_id'],v['cve_id'],v['severity'],v['title'],'needs-validation','NVD CVE API',stamp,
                            p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'],*values[7:]))
                         c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
