@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
 from app.cve_engine import scan_product
 from app.authz import get_user_roles
+from app.hypervisors import HypervisorError, configured_providers, inventory as collect_hypervisor_inventory
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -838,6 +839,99 @@ def logs_report(authorization: str|None=Header(default=None)):
         "medium":sum(f["severity"]=="medium" for f in findings),"low":sum(f["severity"]=="low" for f in findings)},
       "limitations":["Rapport limité aux journaux remontés par les agents et conservés dans la base.",
         "Les alertes sont des signaux à vérifier, pas une preuve automatique d'incident."]}
+
+
+def supabase_soc_request(resource, method, authorization, payload=None):
+    """Call the existing Supabase Data API as the signed-in user (never service_role)."""
+    token = bearer(authorization)
+    if not token:
+        raise HTTPException(401, "Supabase session required")
+    url = SUPABASE_URL + "/rest/v1/" + resource
+    headers = {
+        "apikey": SUPABASE_PUBLISHABLE_KEY,
+        "Authorization": "Bearer " + token,
+        "Accept": "application/json",
+    }
+    if method == "GET":
+        headers["Accept-Profile"] = "soc"
+    else:
+        headers["Content-Profile"] = "soc"
+        headers["Content-Type"] = "application/json"
+        headers["Prefer"] = "resolution=merge-duplicates,return=representation"
+    body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise HTTPException(exc.code, "Supabase a refusé l'accès aux données SOC (session ou rôle)") from None
+        if exc.code in (404, 406, 415):
+            raise HTTPException(503, "Le schéma soc doit être exposé dans Supabase API Settings et la migration doit être appliquée") from None
+        raise HTTPException(502, f"Erreur Data API Supabase (HTTP {exc.code})") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise HTTPException(503, "Supabase Data API est momentanément inaccessible") from None
+    if not raw:
+        return []
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(502, "Réponse invalide de Supabase Data API") from None
+
+
+@app.get("/api/hypervisors/providers")
+def hypervisor_providers(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    return configured_providers()
+
+
+@app.get("/api/hypervisors/inventory")
+def list_hypervisor_inventory(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    return supabase_soc_request(
+        "hypervisor_inventory?select=provider,vm_id,name,state,metadata,last_seen,updated_by"
+        "&order=provider.asc,name.asc&limit=1000",
+        "GET", authorization,
+    )
+
+
+@app.post("/api/hypervisors/sync")
+def sync_hypervisor_inventory(authorization: str | None = Header(default=None)):
+    actor = require_analyst(authorization)
+    outcomes = []
+    for provider in configured_providers():
+        name = provider["provider"]
+        if not provider["configured"]:
+            outcomes.append({"provider": name, "status": "not-configured", "saved": 0})
+            continue
+        try:
+            machines = collect_hypervisor_inventory(name)
+            stamp = now()
+            records = []
+            for machine in machines[:2000]:
+                vm_id = str(machine.get("id") or "").strip()
+                if not vm_id:
+                    continue
+                records.append({
+                    "provider": name,
+                    "vm_id": vm_id[:255],
+                    "name": str(machine.get("name") or vm_id)[:255],
+                    "state": str(machine.get("state") or "unknown")[:80],
+                    "metadata": machine.get("metadata") if isinstance(machine.get("metadata"), dict) else {},
+                    "last_seen": stamp,
+                    "updated_by": actor[:255],
+                })
+            saved = supabase_soc_request(
+                "hypervisor_inventory?on_conflict=provider,vm_id",
+                "POST", authorization, records,
+            ) if records else []
+            outcomes.append({"provider": name, "status": "ok", "discovered": len(records),
+                             "saved": len(saved) if isinstance(saved, list) else len(records)})
+        except (HypervisorError, HTTPException) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            outcomes.append({"provider": name, "status": "error", "saved": 0, "message": str(detail)[:240]})
+    audit("hypervisor.inventory.sync", "all-providers", json.dumps(outcomes, ensure_ascii=False), actor)
+    return {"results": outcomes, "read_only": True, "timestamp": now()}
 
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
