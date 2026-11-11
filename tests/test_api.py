@@ -27,6 +27,20 @@ class ApiSmokeTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_agent_tokens_are_stored_as_hashes(self):
+        import hashlib
+        from fastapi import HTTPException
+        from app.main import conn, require_agent
+
+        raw_token = "agent-secret-for-hash-test"
+        digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        with conn() as c:
+            c.execute("INSERT INTO agent_tokens(token,asset_id) VALUES(?,?)", (digest, "asset-hash-test"))
+
+        self.assertEqual(require_agent("Bearer " + raw_token), "asset-hash-test")
+        with self.assertRaises(HTTPException):
+            require_agent("Bearer " + digest)
+
     def test_health(self):
         self.assertEqual(self.client.get("/api/health").status_code, 200)
 
