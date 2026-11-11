@@ -132,5 +132,56 @@ class HypervisorReadOnlySafetyTests(unittest.TestCase):
         self.assertEqual(provider["mode"], "read-only")
 
 
+
+
+class HypervisorConfigurationSafetyTests(unittest.TestCase):
+    @patch.dict(os.environ, {
+        "CSV_VMWARE_URL": "https://vcenter.example",
+        "CSV_VMWARE_USERNAME": "csv-readonly",
+        "CSV_VMWARE_PASSWORD": "vmware-private-secret",
+        "CSV_PROXMOX_URL": "https://pve.example:8006",
+        "CSV_PROXMOX_TOKEN_ID": "csv@pve!soc",
+        "CSV_PROXMOX_TOKEN_SECRET": "proxmox-private-secret",
+        "CSV_HYPERV_HOST": "https://hyperv.example:5986/wsman",
+        "CSV_HYPERV_USERNAME": "DOMAIN\\csv",
+        "CSV_HYPERV_PASSWORD": "hyperv-private-secret",
+        "CSV_VBOX_COLLECTOR_TOKEN": "collector-private-secret",
+    }, clear=True)
+    @patch("app.hypervisors.shutil.which", return_value=None)
+    def test_readiness_reports_configured_providers_without_secret_values(self, _which):
+        from app.hypervisors import configured_providers
+        result = {x["provider"]: x for x in configured_providers()}
+        for provider in ("vmware", "proxmox", "hyperv", "virtualbox"):
+            self.assertTrue(result[provider]["configured"])
+            self.assertEqual(result[provider]["mode"], "read-only")
+        self.assertTrue(result["virtualbox"]["host_collector"])
+        rendered = repr(result)
+        for secret in ("vmware-private-secret", "proxmox-private-secret",
+                       "hyperv-private-secret", "collector-private-secret"):
+            self.assertNotIn(secret, rendered)
+
+    @patch.dict(os.environ, {
+        "CSV_VMWARE_URL": "http://vcenter.example",
+        "CSV_VMWARE_USERNAME": "readonly",
+        "CSV_VMWARE_PASSWORD": "secret",
+    }, clear=False)
+    @patch("app.hypervisors._request")
+    def test_vmware_refuses_plaintext_before_sending_credentials(self, request):
+        with self.assertRaises(HypervisorError):
+            VMwareConnector().inventory()
+        request.assert_not_called()
+
+    @patch.dict(os.environ, {
+        "CSV_PROXMOX_URL": "http://pve.example:8006",
+        "CSV_PROXMOX_TOKEN_ID": "csv@pve!soc",
+        "CSV_PROXMOX_TOKEN_SECRET": "secret",
+    }, clear=False)
+    @patch("app.hypervisors._request")
+    def test_proxmox_refuses_plaintext_before_sending_token(self, request):
+        with self.assertRaises(HypervisorError):
+            ProxmoxConnector().inventory()
+        request.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
