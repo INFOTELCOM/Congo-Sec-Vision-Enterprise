@@ -97,7 +97,7 @@ Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale*
 
 La branche d'amélioration ajoute au moteur CVE :
 - pagination NVD 2.0 avec reprise bornée et temporisation configurable ;
-- lecture des métriques CVSS 4.0 / 3.1 / 3.0 / 2.0, vecteur, CWE, CPE, références et dates ;
+- lecture des métriques CVSS 4.0 / 3.1 / 3.0 / 2.0, vecteur, CWE, CPE, références, dates, SSVC v2.0.3 et déclarations affected ;
 - évaluation récursive des nœuds CPE AND/OR et des bornes de versions, en mode conservateur ;
 - enrichissement EPSS (FIRST) et indicateur CISA Known Exploited Vulnerabilities (KEV) ;
 - filtres CVE par gravité, éditeur, produit, CWE, CVSS, EPSS, KEV et statut ;
