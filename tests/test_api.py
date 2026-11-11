@@ -15,11 +15,11 @@ class ApiSmokeTests(unittest.TestCase):
         from app.main import app
         import app.main as api_module
         from fastapi import HTTPException
-        def test_require_admin(auth):
+        def test_require_roles(auth, allowed_roles):
             if auth != "Bearer unit-test-admin-token-unique":
                 raise HTTPException(401, "Invalid test session")
             return "unit-test-admin"
-        api_module.require_admin = test_require_admin
+        api_module.require_roles = test_require_roles
         cls.client = TestClient(app)
         cls.headers = {"Authorization": "Bearer unit-test-admin-token-unique"}
 
