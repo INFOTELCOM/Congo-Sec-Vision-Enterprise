@@ -41,6 +41,11 @@ def init():
           id INTEGER PRIMARY KEY AUTOINCREMENT, vendor TEXT NOT NULL DEFAULT '', product TEXT NOT NULL DEFAULT '',
           asset_id TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
           created_at TEXT NOT NULL, UNIQUE(vendor,product,asset_id));
+        CREATE TABLE IF NOT EXISTS cve_notifications(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, subscription_id INTEGER NOT NULL, vulnerability_id INTEGER NOT NULL,
+          cve_id TEXT NOT NULL, event_type TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+          severity TEXT NOT NULL DEFAULT 'unknown', created_at TEXT NOT NULL, read_at TEXT,
+          UNIQUE(subscription_id,vulnerability_id,event_type));
         CREATE TABLE IF NOT EXISTS software(id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT,
           name TEXT, version TEXT, vendor TEXT, collected_at TEXT);
         CREATE TABLE IF NOT EXISTS log_findings(id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT,
@@ -363,6 +368,22 @@ def delete_cve_subscription(subscription_id:int, authorization:str|None=Header(d
     if not cur.rowcount: raise HTTPException(404,"Subscription not found")
     audit("cve.subscription.delete",subscription_id,"",actor)
     return {"deleted":True}
+
+@app.get("/api/cve/notifications")
+def list_cve_notifications(unread_only: bool=False, authorization:str|None=Header(default=None)):
+    require_admin(authorization)
+    sql="SELECT * FROM cve_notifications"+(" WHERE read_at IS NULL" if unread_only else "")+" ORDER BY id DESC LIMIT 500"
+    with conn() as c: rows=c.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+@app.patch("/api/cve/notifications/{notification_id}")
+def mark_cve_notification_read(notification_id:int, authorization:str|None=Header(default=None)):
+    actor=require_admin(authorization)
+    with conn() as c:
+        cur=c.execute("UPDATE cve_notifications SET read_at=? WHERE id=?",(now(),notification_id))
+    if not cur.rowcount: raise HTTPException(404,"Notification not found")
+    audit("cve.notification.read",notification_id,"",actor)
+    return {"read":True}
 @app.get("/api/software")
 def software(authorization:str|None=Header(default=None)):
     require_admin(authorization)
@@ -415,6 +436,15 @@ def run_cve_sync(limit=25):
                            p['name'],p['version'],p['vendor'],v['match_confidence'],v['cve_url'],*values[7:]))
                         c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
                           (cur.lastrowid,v['cve_id'],'first-seen',json.dumps({'match_confidence':v['match_confidence'],'cvss_score':v.get('cvss_score')}),stamp))
+                        subscriptions=c.execute("""SELECT * FROM cve_subscriptions WHERE active=1
+                          AND (vendor='' OR lower(?) LIKE '%'||lower(vendor)||'%' OR lower(vendor) LIKE '%'||lower(?)||'%')
+                          AND (product='' OR lower(?) LIKE '%'||lower(product)||'%' OR lower(product) LIKE '%'||lower(?)||'%')
+                          AND (asset_id='' OR asset_id=?)""",
+                          (p['vendor'] or '',p['vendor'] or '',p['name'] or '',p['name'] or '',p['asset_id'] or '')).fetchall()
+                        for sub in subscriptions:
+                            c.execute("""INSERT OR IGNORE INTO cve_notifications(subscription_id,vulnerability_id,cve_id,event_type,title,severity,created_at)
+                              VALUES(?,?,?,?,?,?,?)""",
+                              (sub['id'],cur.lastrowid,v['cve_id'],'new-cve',v['title'][:500],v['severity'],stamp))
                         added+=1
                 if v['match_confidence']=='version-range-match': matched+=1
         except Exception as exc: errors.append({'software':p['name'],'error':str(exc)[:220]})
