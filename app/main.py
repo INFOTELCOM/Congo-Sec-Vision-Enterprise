@@ -423,7 +423,9 @@ def run_cve_sync(limit=25):
                           old['match_confidence'] != v['match_confidence'] or
                           old['cvss_score'] != v.get('cvss_score') or
                           old['epss_score'] != v.get('epss_score') or
-                          bool(old['known_exploited']) != bool(v.get('known_exploited'))
+                          bool(old['known_exploited']) != bool(v.get('known_exploited')) or
+                          old['ssvc_json'] != json.dumps(v.get('ssvc',[])) or
+                          old['affected_json'] != json.dumps(v.get('affected',[]))
                         )
                         if changed:
                             c.execute("INSERT INTO cve_history(vulnerability_id,cve_id,event_type,details,created_at) VALUES(?,?,?,?,?)",
