@@ -50,6 +50,12 @@ class ApiSmokeTests(unittest.TestCase):
         with self.assertRaises(HTTPException):
             require_agent("Bearer " + digest)
 
+    def test_readiness_reports_database_state(self):
+        response = self.client.get("/api/health/ready")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(response.json()["checks"]["database"], {"ok", "error"})
+        self.assertIn("cve_worker", response.json()["checks"])
+
     def test_health(self):
         self.assertEqual(self.client.get("/api/health").status_code, 200)
 
