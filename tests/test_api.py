@@ -27,6 +27,15 @@ class ApiSmokeTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
+    def test_cve_sync_rejects_overlapping_runs(self):
+        from app.main import _CVE_SYNC_LOCK, run_cve_sync
+        self.assertTrue(_CVE_SYNC_LOCK.acquire(blocking=False))
+        try:
+            result = run_cve_sync()
+        finally:
+            _CVE_SYNC_LOCK.release()
+        self.assertTrue(result["busy"])
+
     def test_agent_tokens_are_stored_as_hashes(self):
         import hashlib
         from fastapi import HTTPException
