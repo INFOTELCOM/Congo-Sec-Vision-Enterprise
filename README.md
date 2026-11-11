@@ -114,7 +114,7 @@ Les routes SOC privilégiées exigent maintenant un rôle défini côté serveur
 
 ### Synchronisation
 
-Par défaut, le worker traite un lot toutes les 15 minutes (minimum configurable de 5 minutes). Ajuster `CVE_SYNC_INTERVAL_MINUTES`, `CVE_SYNC_BATCH_SIZE`, `CVE_SYNC_PRODUCT_INTERVAL_SECONDS`, `NVD_API_KEY` et `NVD_REQUEST_INTERVAL_SECONDS` selon la taille de l'inventaire et les limites NVD. La fraîcheur dépend du volume d'inventaire, des quotas NVD et de la durée de chaque lot : il s'agit d'une synchronisation périodique, pas d'un flux instantané. Les enrichissements EPSS/KEV sont facultatifs : une indisponibilité de ces services ne doit pas empêcher l'import NVD.
+Par défaut, le worker traite un lot toutes les 15 minutes (minimum configurable de 5 minutes). Ajuster `CVE_SYNC_INTERVAL_MINUTES`, `CVE_SYNC_BATCH_SIZE`, `CVE_SYNC_PRODUCT_INTERVAL_SECONDS`, `NVD_API_KEY` et `NVD_REQUEST_INTERVAL_SECONDS` selon la taille de l'inventaire et les limites NVD. La fraîcheur dépend du volume d'inventaire, des quotas NVD et de la durée de chaque lot : il s'agit d'une synchronisation périodique, pas d'un flux instantané. Les exécutions manuelles et planifiées sont sérialisées pour éviter deux scans simultanés du même curseur. Les jetons d'agent sont stockés sous forme d'empreintes SHA-256 ; les anciens jetons en clair sont migrés au démarrage. Les enrichissements EPSS/KEV sont facultatifs : une indisponibilité de ces services ne doit pas empêcher l'import NVD.
 
 ## Conditions bloquantes avant production
 
