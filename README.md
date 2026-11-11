@@ -4,7 +4,7 @@ Version source : 0.5.1 (API 0.3.1 / Android 0.4.1)
 
 API FastAPI, console web, agents Windows/Linux et application Android native Java.
 
-> **État :** version de laboratoire. L'authentification repose sur un jeton administrateur partagé. MFA, SSO et RBAC effectif ne sont pas implémentés. Ne pas exposer l'API directement sur Internet.
+> **État :** branche d'amélioration en validation. Les routes SOC vérifient une session Supabase et des rôles serveur dans `app_metadata` (`csv_role`, `role` ou `roles`). Les connecteurs hyperviseurs et la découverte réseau sont en lecture seule / bornés. Les modules historiques restent sur SQLite ; la migration complète vers PostgreSQL, le MFA et plusieurs contrôles de production restent à achever. Ne pas exposer l'API directement sur Internet.
 
 ## Arborescence
 - `app/` : API FastAPI et interface web servie par l'API.
@@ -22,7 +22,7 @@ Prérequis : Docker Desktop (Windows) ou Docker Engine + Compose (Linux).
 1. Copier `.env.example` vers `.env` et remplacer les deux jetons par des valeurs longues, uniques et différentes.
 2. Lancer `docker compose up -d --build`.
 3. Vérifier `http://127.0.0.1:8081/api/health`.
-4. Ouvrir `http://127.0.0.1:8081` et utiliser le jeton administrateur défini dans `.env`.
+4. Ouvrir `http://127.0.0.1:8081`, se connecter avec un compte Supabase dont `app_metadata.csv_role` ou `app_metadata.role` vaut `admin` (voir docs/SUPABASE-AUTH-RBAC.md). Le jeton `AGENT_ENROLLMENT_TOKEN` sert uniquement à l'enrôlement initial des agents.
 
 La publication locale est liée à `127.0.0.1` par défaut. Pour un laboratoire VMware, définir explicitement `SOC_BIND_IP` dans `.env` avec l'adresse de l'interface privée appropriée. Ne pas utiliser `0.0.0.0` sans filtrage réseau. Ne jamais exécuter `docker compose down -v` : cela supprime les données persistantes.
 
@@ -49,8 +49,8 @@ python -m unittest discover -s tests -v
 ```
 
 ## Limites connues
-- SQLite convient au laboratoire ; PostgreSQL, sauvegardes et migrations sont à prévoir pour une exploitation durable.
-- Jeton administrateur partagé ; pas de MFA, SSO ni authentification individuelle/RBAC.
+- SQLite conserve les modules SOC historiques ; Supabase PostgreSQL stocke déjà l'inventaire des hyperviseurs. La migration des autres domaines est progressive et non encore terminée.
+- Rôles Supabase granulaires appliqués côté API ; MFA et vérification du niveau d'assurance AAL2 restent à intégrer.
 - Les rôles d'équipe sont informatifs.
 - Les approbations n'exécutent aucune commande.
 - Les correspondances NVD et constats de détection sont des signaux à valider, pas des preuves automatiques.
@@ -91,3 +91,62 @@ Le jeton agent est conservé dans `/var/lib/congo-sec-vision/agent-token.json` a
 ### Vérification
 
 Après le premier heartbeat, ouvrir **Actifs & machines** puis **Vue générale** et cliquer sur **Actualiser**. La machine doit apparaître avec son hostname, son OS, ses adresses IP et ses métriques. Le statut « En ligne » dépend d'un heartbeat reçu dans les 3 dernières minutes. Les événements collectés apparaissent dans **Menaces & événements**. N'enrôler que des machines que vous êtes autorisé à administrer.
+
+
+## Machines virtuelles
+
+L'agent Windows/Linux tente de reconnaître si le système invité fonctionne dans une VM (VMware, VirtualBox, Hyper-V, KVM/QEMU, Xen, Parallels et environnements cloud courants). Le résultat est transmis dans l'inventaire et affiché dans **Actifs & machines** sous la forme « VM · fournisseur ».
+
+Cette détection est une heuristique exécutée depuis le système invité : elle peut retourner « non détectée » sur certains environnements et ne constitue pas une preuve de l'hyperviseur. Elle ne donne pas accès à l'état d'alimentation, aux snapshots, aux consoles, à la configuration ou à l'administration de l'hyperviseur.
+
+Pour superviser une VM, installer l'agent dans le système invité comme sur un poste physique et autoriser sa connexion HTTPS vers l'API SOC. La découverte et l'administration centralisées des hôtes VMware, VirtualBox, Hyper-V et Proxmox via leurs API constituent une intégration distincte, non incluse dans cette première étape. Aucun scan réseau automatique ni accès non autorisé n'est effectué.
+
+## Intelligence CVE — NVD, EPSS et CISA KEV
+
+La branche d'amélioration ajoute au moteur CVE :
+- pagination NVD 2.0 avec reprise bornée et temporisation configurable ;
+- lecture des métriques CVSS 4.0 / 3.1 / 3.0 / 2.0, vecteur, CWE, CPE, références, dates, SSVC v2.0.3 et déclarations affected ;
+- évaluation récursive des nœuds CPE AND/OR et des bornes de versions, en mode conservateur ;
+- enrichissement EPSS (FIRST) et indicateur CISA Known Exploited Vulnerabilities (KEV) ;
+- filtres CVE par gravité, éditeur, produit, CWE, CVSS, EPSS, KEV et statut ;
+- historique des changements, assignation analyste, tags, abonnements éditeur/produit et alertes dans la console.
+
+**Interprétation :** un résultat CPE est un candidat à vérifier, pas une preuve d'exploitabilité. EPSS est une estimation probabiliste, CVSS mesure la sévérité technique et KEV signale une exploitation connue. Le contexte de l'actif, les avis éditeurs et les correctifs rétroportés doivent être vérifiés.
+
+
+Les alertes actuellement implémentées sont des notifications internes à la console, créées lors de la découverte d'une nouvelle CVE correspondant à un abonnement. L'envoi e-mail, Slack, Teams ou webhook n'est pas encore implémenté ; les abonnements ne doivent donc pas être considérés comme un service de notification externe.
+
+### Autoriser un administrateur Supabase
+
+Les routes SOC exigent un rôle défini côté serveur dans `app_metadata`. Attribuer explicitement l'un des rôles suivants dans Supabase Auth (champ `app_metadata.role`, ou tableau `app_metadata.roles`) :
+- `admin` : administration complète, audit, équipe, workflows et validations ;
+- `analyst` : lecture SOC, synchronisation et triage CVE, analyse IA, événements, diagnostics, incidents et export ;
+- `viewer` : lecture seule des données SOC ;
+- `incident_responder` : lecture SOC, gestion des incidents et demandes d'approbation.
+
+Le rôle `owner` est normalisé en `admin`. Ne jamais placer ces rôles dans `user_metadata`, qui est modifiable par l'utilisateur. Les comptes sans rôle reconnu reçoivent HTTP 403. Les permissions sont vérifiées côté API à chaque requête ; le registre local de l'équipe ne confère aucun droit d'accès. Prévoir un compte administrateur de secours et tester chaque profil avant le déploiement.
+
+### Synchronisation
+
+Par défaut, le worker traite un lot toutes les 15 minutes (minimum configurable de 5 minutes). Ajuster `CVE_SYNC_INTERVAL_MINUTES`, `CVE_SYNC_BATCH_SIZE`, `CVE_SYNC_PRODUCT_INTERVAL_SECONDS`, `NVD_API_KEY` et `NVD_REQUEST_INTERVAL_SECONDS` selon la taille de l'inventaire et les limites NVD. La fraîcheur dépend du volume d'inventaire, des quotas NVD et de la durée de chaque lot : il s'agit d'une synchronisation périodique, pas d'un flux instantané. Les exécutions manuelles et planifiées sont sérialisées pour éviter deux scans simultanés du même curseur. Les jetons d'agent sont stockés sous forme d'empreintes SHA-256 ; les anciens jetons en clair sont migrés au démarrage. Les enrichissements EPSS/KEV sont facultatifs : une indisponibilité de ces services ne doit pas empêcher l'import NVD.
+
+## Conditions bloquantes avant production
+
+Cette branche améliore le moteur CVE et le triage, mais **ne constitue pas encore une autorisation de mise en production**. Les éléments suivants doivent être validés ou achevés :
+- remplacer SQLite par PostgreSQL avec migrations versionnées, sauvegardes chiffrées et test de restauration ;
+- implémenter les permissions effectives par rôle (admin, analyste, lecteur, répondant), MFA et gestion de session ;
+- sécuriser l'enrôlement et la rotation des secrets agents, rate limiting, audit immuable et gestion des secrets ;
+- exécuter les tests d'intégration sur NVD/EPSS/KEV, les tests de charge, de reprise et les tests multi-OS ;
+- valider l'interface, le déploiement HTTPS, les sauvegardes et les procédures d'incident sur une infrastructure cible.
+
+Ne pas exposer directement une instance non validée sur Internet. Les actions de remédiation restent manuelles et soumises à validation.
+
+## Hyperviseurs et virtualisation
+
+La console dispose d'une rubrique Hyperviseurs pour synchroniser en lecture seule les inventaires VMware vSphere, Proxmox VE, VirtualBox et Hyper-V. Les identifiants des hyperviseurs restent côté serveur ; aucun secret n'est transmis au navigateur ni stocké dans Supabase. Voir docs/HYPERVISORS.md et les variables CSV_* dans .env.example.
+
+Les enregistrements d'inventaire sont persistés dans la table soc.hypervisor_inventory du projet Supabase existant. Ajouter le schéma soc dans Project Settings → API → Exposed schemas avant d'utiliser les routes Data API. Les rôles admin/analyst peuvent synchroniser ; les rôles autorisés en lecture peuvent consulter.
+
+## Découverte réseau
+
+La rubrique Découverte réseau rassemble les hôtes détectés par les agents et les scans ICMP manuels. Les scans manuels sont limités aux sous-réseaux privés de 256 adresses maximum et réservés aux rôles admin/analyst. Les agents limitent chaque scan local à une fois par sous-réseau toutes les dix minutes. Cette découverte n'enrôle pas les machines et ne remplace pas un inventaire authentifié.

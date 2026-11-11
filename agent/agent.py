@@ -1,4 +1,4 @@
-import argparse, json, os, platform, socket, time, urllib.request, subprocess, shutil
+import argparse, json, os, platform, socket, time, urllib.request, subprocess, shutil, ipaddress, concurrent.futures
 from datetime import datetime, timezone
 import psutil
 
@@ -12,6 +12,46 @@ def local_interfaces():
             if getattr(a.family,"name","")=="AF_INET" and not a.address.startswith("127."):
                 result.append({"interface":name,"address":a.address,"netmask":a.netmask})
     return result
+_network_scan_cache = {}
+
+def discover_connected_networks(force=False):
+    """Discover only bounded private LANs; throttle each subnet to one scan per 10 minutes."""
+    discovered = []
+    current_time = time.time()
+    networks = {}
+    for iface in local_interfaces():
+        try:
+            interface = ipaddress.ip_interface(f"{iface['address']}/{iface['netmask']}")
+            network = interface.network
+            if (not network.is_private or network.is_loopback or network.is_link_local
+                    or network.is_multicast or network.num_addresses > 256):
+                continue
+            networks[str(network)] = str(interface.ip)
+        except (ValueError, TypeError):
+            continue
+    for cidr, own_ip in networks.items():
+        if not force and current_time - _network_scan_cache.get(cidr, 0) < 600:
+            continue
+        _network_scan_cache[cidr] = current_time
+        hosts = [str(ip) for ip in ipaddress.ip_network(cidr).hosts() if str(ip) != own_ip]
+        def probe(ip):
+            command = ["ping", "-n", "1", "-w", "700", ip] if platform.system() == "Windows" else ["ping", "-c", "1", "-W", "1", ip]
+            try:
+                result = subprocess.run(command, capture_output=True, timeout=2, check=False)
+                if result.returncode:
+                    return None
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            try:
+                hostname = socket.gethostbyaddr(ip)[0]
+            except OSError:
+                hostname = ""
+            return {"ip_address": ip, "hostname": hostname, "cidr": cidr}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+            discovered.extend(item for item in pool.map(probe, hosts) if item)
+    return discovered
+
+
 def software_inventory():
     items=[]
     if platform.system()=="Windows":
@@ -50,14 +90,77 @@ def collect_logs():
         for line in raw.splitlines()[-60:]:
             logs.append({"source":"journald","severity":"info","message":line})
     return logs
+def detect_virtualization():
+    """Best-effort guest VM detection; does not query or control the hypervisor."""
+    system = platform.system()
+    vendor = ""
+    model = ""
+    hypervisor = ""
+    if system == "Windows":
+        ps = "(Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model | ConvertTo-Json -Compress)"
+        raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], 10)
+        try:
+            info = json.loads(raw or "{}")
+            vendor = str(info.get("Manufacturer") or "")
+            model = str(info.get("Model") or "")
+        except (ValueError, AttributeError):
+            pass
+    elif system == "Linux":
+        for path in ("/sys/class/dmi/id/sys_vendor", "/sys/class/dmi/id/product_name"):
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    value = f.read().strip()
+            except OSError:
+                value = ""
+            if path.endswith("sys_vendor"):
+                vendor = value
+            else:
+                model = value
+        if shutil.which("systemd-detect-virt"):
+            hypervisor = run(["systemd-detect-virt"], 5).strip()
+            if hypervisor == "none":
+                hypervisor = ""
+    identity = (vendor + " " + model + " " + hypervisor).lower()
+    indicators = ("vmware", "virtualbox", "virtual machine", "kvm", "qemu",
+                  "xen", "hyper-v", "hyperv", "parallels", "bhyve", "amazon ec2",
+                  "google compute engine", "google cloud", "openstack")
+    is_vm = bool(hypervisor) or any(term in identity for term in indicators)
+    if hypervisor:
+        provider = hypervisor
+    elif "vmware" in identity:
+        provider = "VMware"
+    elif "virtualbox" in identity:
+        provider = "VirtualBox"
+    elif "hyper-v" in identity or "hyperv" in identity or "virtual machine" in identity:
+        provider = "Hyper-V / Microsoft Virtual Machine"
+    elif "kvm" in identity or "qemu" in identity:
+        provider = "KVM / QEMU"
+    elif "xen" in identity:
+        provider = "Xen"
+    elif "parallels" in identity:
+        provider = "Parallels"
+    elif "bhyve" in identity:
+        provider = "bhyve"
+    elif "amazon ec2" in identity:
+        provider = "Amazon EC2"
+    elif "openstack" in identity:
+        provider = "OpenStack"
+    else:
+        provider = "unknown" if is_vm else None
+    return {"is_virtual_machine": is_vm, "provider": provider,
+            "manufacturer": vendor[:160], "model": model[:160],
+            "detection_method": "guest_os_heuristic", "hypervisor_api_connected": False}
+
+
 def collect():
     vm=psutil.virtual_memory(); disk=psutil.disk_usage(os.path.abspath(os.sep))
     return {"hostname":socket.gethostname(),"platform":platform.system(),"platform_release":platform.release(),
       "platform_version":platform.version(),"architecture":platform.machine(),"processor":platform.processor(),
       "cpu_percent":psutil.cpu_percent(interval=1),"memory_percent":vm.percent,"disk_percent":disk.percent,
       "ip_addresses":[{"interface":x["interface"],"address":x["address"]} for x in local_interfaces()],
-      "interfaces":local_interfaces(),"software":software_inventory(),"logs":collect_logs(),
-      "agent_version":"0.2.0","collected_at":datetime.now(timezone.utc).isoformat()}
+      "interfaces":local_interfaces(),"network_discoveries":discover_connected_networks(),
+      "software":software_inventory(),"logs":collect_logs(),
+      "virtualization":detect_virtualization(),"agent_version":"0.2.0","collected_at":datetime.now(timezone.utc).isoformat()}
 def post(url,payload,token=None):
     req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={"Content-Type":"application/json",**({"Authorization":"Bearer "+token} if token else {})},method="POST")
     with urllib.request.urlopen(req,timeout=45) as r: return json.loads(r.read().decode())
