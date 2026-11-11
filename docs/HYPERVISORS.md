@@ -1,85 +1,125 @@
-# Hypervisor inventory connectors
+# Configurer les hyperviseurs de Congo Sec Vision
 
-The read-only connectors are wired to authenticated FastAPI routes and the Hypervisors dashboard page. Inventory snapshots are upserted into the existing Supabase project in soc.hypervisor_inventory. The legacy endpoint/CVE/incident modules still use SQLite and are not silently migrated by this feature.
+Les connecteurs VMware, Proxmox, VirtualBox et Hyper-V sont intégrés en lecture seule. Ils interrogent l'inventaire, puis les administrateurs/analystes peuvent synchroniser les résultats vers `soc.hypervisor_inventory` dans le projet Supabase existant. Aucun Start/Stop/Delete/Set, snapshot ou changement de configuration d'une VM n'est disponible.
 
-## Supported inventory paths
+## Avant de commencer
 
-| Provider | Inventory mechanism | Required placement |
-|---|---|---|
-| VMware vSphere | vSphere REST API (/api/session, /api/vcenter/vm) | API host can reach vCenter |
-| Proxmox VE | Proxmox REST API (/api2/json/cluster/resources?type=vm) | API host can reach Proxmox |
-| VirtualBox | Local VBoxManage list vms --long | API process runs on VirtualBox host |
-| Hyper-V | PowerShell inventory over WinRM HTTPS | API host can reach Windows Hyper-V host on TCP 5986 |
+1. Utiliser des comptes techniques distincts avec les droits strictement nécessaires à la lecture des inventaires.
+2. Conserver tous les identifiants dans le fichier local `.env`. Ne jamais les placer dans Git, dans la configuration du navigateur, ni dans un message.
+3. Vérifier que le conteneur API peut joindre les hyperviseurs sur le réseau et que les certificats TLS sont approuvés.
+4. Après chaque modification de `.env`, recréer uniquement l'API :
 
-VirtualBox is not treated as a generic REST API: its connector uses the VBoxManage CLI on the same operating-system host as the API process. The current Docker image does not install VBoxManage and a container cannot execute a host-installed binary just because it exists on the Docker host. Therefore VirtualBox inventory is not available in the standard Docker deployment yet; do not mount host binaries or the VirtualBox kernel device as an ad-hoc workaround. It requires a separately designed and authenticated host-side collector, or running the API natively on the VirtualBox host. Hyper-V uses WinRM with HTTPS; do not expose WinRM to the public Internet.
+```bash
+docker compose up -d --no-deps --force-recreate api
+docker compose ps
+```
 
-## Server-side environment variables
+Le tableau **Hyperviseurs** affiche les variables manquantes et les instructions de chaque fournisseur, sans jamais afficher les valeurs des secrets. Le bouton **Tester les connexions** effectue un véritable inventaire en lecture seule ; le fait que les variables soient renseignées ne suffit pas à déclarer le fournisseur connecté.
 
-Configure only the providers actually used. Never place credentials in the browser, dashboard configuration, Git, or chat.
+## VMware vCenter / vSphere
 
-### VMware
-- CSV_VMWARE_URL — vCenter base URL, for example https://vcenter.example.org
-- CSV_VMWARE_USERNAME
-- CSV_VMWARE_PASSWORD
-- CSV_VMWARE_VERIFY_TLS=true (default; keep certificate validation enabled)
+Prérequis : vCenter joignable en HTTPS et API REST activée. Les routes utilisées sont `POST /api/session` puis `GET /api/vcenter/vm`.
 
-Use a dedicated vCenter account with inventory-read privileges only.
+Créer un compte de service dédié (par exemple `csv-inventory`) et un rôle vCenter personnalisé limité à la consultation de l'inventaire et des propriétés VM nécessaires. Ne pas attribuer le rôle Administrator. Assigner le rôle au périmètre datacenter/vCenter approprié avec propagation aux objets à inventorier.
 
-### Proxmox
-- CSV_PROXMOX_URL — base URL, for example https://pve.example.org:8006
-- CSV_PROXMOX_TOKEN_ID — API token identity, for example csv-readonly@pve!inventory
-- CSV_PROXMOX_TOKEN_SECRET
-- CSV_PROXMOX_VERIFY_TLS=true (default)
+Variables à renseigner dans le `.env` local :
 
-Create a dedicated Proxmox role/token with only permissions required to view cluster and VM inventory.
+```dotenv
+CSV_VMWARE_URL=https://vcenter.exemple.local
+CSV_VMWARE_USERNAME=csv-inventory@vsphere.local
+CSV_VMWARE_PASSWORD=VALEUR_LOCALE_PRIVEE
+CSV_VMWARE_VERIFY_TLS=true
+```
 
-### VirtualBox
-- CSV_VBOXMANAGE_PATH=VBoxManage (default) or an absolute path to VBoxManage.
-- The API service must run on the VirtualBox host and under an OS account allowed to query the local VirtualBox service.
+Le connecteur ouvre une session, lit les machines virtuelles et ferme la session. En cas de certificat interne, installer la CA dans le conteneur API ; garder `CSV_VMWARE_VERIFY_TLS=true`.
 
-### Hyper-V
-- CSV_HYPERV_HOST — host name or explicit WinRM HTTPS endpoint
-- CSV_HYPERV_USERNAME
-- CSV_HYPERV_PASSWORD
-- CSV_HYPERV_TRANSPORT=ntlm (default; use the organization's approved authentication method)
+## Proxmox VE
 
-Enable and firewall WinRM HTTPS deliberately. Use a certificate trusted by the API host. The Hyper-V connector requires the pinned pywinrm package.
+Prérequis : API Proxmox joignable en HTTPS (port 8006 par défaut).
 
-## Safety boundaries
+Créer un compte technique et un API Token dédié au SOC. Attribuer au chemin `/` le rôle intégré `PVEAuditor` (ou un rôle personnalisé strictement équivalent limité à la lecture). Respecter la séparation de privilèges du token et ne lui accorder aucun droit d'administration.
 
-- Inventory reads only VM metadata and resource/state fields.
-- No start, stop, restart, snapshot, delete, console, migration, or VM configuration operation is implemented.
-- TLS certificate validation is enabled by default.
-- Credentials are read from process environment and are never returned by connector status.
-- Provider errors are sanitized to avoid returning response bodies or credentials.
-- Each provider is independent: an unavailable provider should not prevent querying another provider.
-- Do not connect a provider to production until a dedicated read-only service account and network ACL are configured.
+```dotenv
+CSV_PROXMOX_URL=https://pve.exemple.local:8006
+CSV_PROXMOX_TOKEN_ID=csv-inventory@pve!soc
+CSV_PROXMOX_TOKEN_SECRET=VALEUR_LOCALE_PRIVEE
+CSV_PROXMOX_VERIFY_TLS=true
+```
 
-## API and Supabase integration
+Le connecteur utilise uniquement `GET /api2/json/cluster/resources?type=vm`. En cas de certificat auto-signé, installer la CA de votre cluster dans l'image/conteneur.
 
-- GET /api/hypervisors/providers reports non-sensitive connector configuration status.
-- GET /api/hypervisors/inventory reads the SOC inventory through the existing user's Supabase JWT.
-- POST /api/hypervisors/sync requires admin or analyst and upserts discovered VM metadata.
-- The backend uses the publishable key plus the caller's JWT; it does not use service_role.
-- Apply the versioned migration in supabase/migrations and add soc to Supabase Dashboard → Project Settings → API → Exposed schemas. The SQL migration grants schema usage and table privileges, but Supabase's Data API will not route custom schemas until soc is exposed.
-- RLS policies restrict inventory reads to recognized SOC roles and writes to admin/analyst.
+## VirtualBox sur Windows avec WSL2/Docker
 
-## Integration boundary
+Dans le déploiement Docker/WSL standard, le conteneur n'a pas accès au binaire Windows `VBoxManage.exe`. Utiliser le collecteur hôte fourni : `scripts/virtualbox-host-collector.ps1`. Il exécute uniquement :
 
-The connector library, API routes, dashboard, tests, and additive Supabase migration are included. No live hypervisor has been connected yet because provider endpoints and read-only credentials must be configured on the API host. The complete historical SQLite-to-PostgreSQL migration is not included: each legacy data domain needs an export, schema mapping, reconciliation, backup, and rollback plan. Production deployment is not performed from this feature branch.
+```powershell
+VBoxManage.exe list vms --long
+```
 
+### 1. Créer un jeton dédié
 
-## Isolated simulation mode
+Dans Ubuntu/WSL, générer un jeton aléatoire :
 
-The API includes an optional synthetic inventory to validate the dashboard without connecting to a real hypervisor.
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
 
-- Set `CSV_HYPERVISOR_LAB_MODE=true` in the API server `.env` to enable it; it is disabled by default.
-- Read it with `GET /api/hypervisors/lab/inventory` (authenticated user required).
-- Every synthetic record is marked `simulated=true`, `source=simulation`, `read_only=true`, and uses a `lab-` ID.
-- Synthetic records are returned separately from `GET /api/hypervisors/inventory` and are never passed to the Supabase upsert route.
-- The dashboard labels the section as simulation and does not merge the simulated records into real inventory totals.
-- Disable the feature with `CSV_HYPERVISOR_LAB_MODE=false` and restart the API.
+Placer sa valeur uniquement dans le `.env` local :
 
-## Testing real provider connectivity
+```dotenv
+CSV_VBOX_COLLECTOR_TOKEN=JETON_LOCAL_A_GARDER_SECRET
+```
 
-`POST /api/hypervisors/providers/check` requires an analyst/admin session. It performs only provider inventory reads, reports reachable/not-configured/error and the number of VMs returned, and explicitly reports `persisted=false`. It does not synchronize or modify any VM. A provider can only be reported as reachable when its endpoint and read-only credentials are configured on the API host. Unit tests use mocks; they do not validate a live hypervisor.
+Recréer le service API :
+
+```bash
+docker compose up -d --no-deps --force-recreate api
+```
+
+### 2. Lancer le collecteur depuis Windows
+
+Ouvrir PowerShell Windows dans le dossier du dépôt et exécuter :
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\virtualbox-host-collector.ps1 -ApiUrl http://127.0.0.1:8081
+```
+
+Le script détecte `VBoxManage.exe`, demande le jeton de manière masquée et transmet les noms, UUID, états, CPU et mémoire. Il ne démarre ni n'arrête aucune VM. Le collecteur peut être relancé après un changement de l'inventaire VirtualBox.
+
+Après la première remontée, **Tester les connexions** doit indiquer « Connecté ». Si le jeton est configuré mais qu'aucun relevé n'a été reçu, le statut indique une attente plutôt qu'une connexion réelle.
+
+## Hyper-V
+
+Prérequis : WinRM HTTPS opérationnel sur le port 5986, résolution DNS, certificat serveur de confiance depuis le conteneur API et module Hyper-V disponible au compte distant.
+
+Configurer WinRM avec HTTPS. Utiliser un compte restreint ou un endpoint JEA limité aux commandes de lecture quand cela est possible. Le connecteur exécute uniquement `Get-VM` et sélectionne les propriétés d'inventaire.
+
+```dotenv
+CSV_HYPERV_HOST=https://hyperv.exemple.local:5986/wsman
+CSV_HYPERV_USERNAME=DOMAINE\csv-inventory
+CSV_HYPERV_PASSWORD=VALEUR_LOCALE_PRIVEE
+CSV_HYPERV_TRANSPORT=ntlm
+```
+
+Le connecteur refuse WinRM en HTTP (port 5985). Pour une CA interne, installer cette CA dans le conteneur API ; ne pas contourner la validation TLS.
+
+## Tester et synchroniser
+
+1. Recréer le service API après modification du `.env`.
+2. Se connecter à Congo Sec Vision avec un compte Supabase ayant le rôle `admin` ou `analyst`.
+3. Ouvrir **Hyperviseurs** et vérifier les paramètres manquants.
+4. Cliquer **Tester les connexions**. Cette opération ne persiste aucun nouvel inventaire.
+5. Corriger réseau, TLS ou permissions jusqu'à obtenir un statut « Connecté ».
+6. Cliquer **Synchroniser les hyperviseurs réels** pour écrire les machines réelles dans la table Supabase `soc.hypervisor_inventory`.
+
+Les rôles en lecture peuvent consulter l'inventaire ; seuls admin/analyst peuvent tester les connexions et synchroniser. Les données de laboratoire sont présentées séparément.
+
+## Laboratoire synthétique (sans hyperviseur)
+
+Pour tester les composants d'affichage sans se connecter à une infrastructure réelle :
+
+```dotenv
+CSV_HYPERVISOR_LAB_MODE=true
+```
+
+Puis recréer le service API et ouvrir la page Hyperviseurs. Les machines fictives sont étiquetées **SIMULATED**, ne sont pas écrites dans Supabase et ne sont jamais fusionnées avec l'inventaire réel. Remettre `false` après les essais.
