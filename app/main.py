@@ -237,6 +237,9 @@ def asset_json(a, online=None):
 
 @app.get("/")
 def index(): return FileResponse("app/static/index.html")
+
+@app.get("/config.js")
+def public_web_config(): return FileResponse("app/static/config.js", media_type="application/javascript")
 @app.get("/health")
 @app.get("/api/health")
 def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"0.3.1","time":now()}
