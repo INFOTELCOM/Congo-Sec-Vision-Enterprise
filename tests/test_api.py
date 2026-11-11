@@ -113,6 +113,37 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/cve/notifications?unread_only=true", headers=self.headers).json(), [])
 
 
+
+    def test_network_discovery_manual_scan_is_authenticated_and_bounded(self):
+        from unittest.mock import patch
+        with patch("app.main.discover_network", return_value=[
+            {"ip_address":"192.168.50.10","hostname":"lab-host"}
+        ]) as scan:
+            response = self.client.post("/api/network/discovery", headers=self.headers,
+                                        json={"cidr":"192.168.50.0/24"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["hosts_reachable"], 1)
+        scan.assert_called_once_with("192.168.50.0/24")
+
+    def test_network_discovery_rejects_public_network(self):
+        response = self.client.post("/api/network/discovery", headers=self.headers,
+                                    json={"cidr":"8.8.8.0/24"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_agent_network_observations_are_validated(self):
+        from app.main import asset_inventory, conn
+        asset_inventory({
+            "hostname":"agent-network-test","platform":"Linux","ip_addresses":[],
+            "software":[],
+            "network_discoveries":[
+                {"cidr":"192.168.50.0/24","ip_address":"192.168.50.15","hostname":"allowed-host"},
+                {"cidr":"192.168.50.0/24","ip_address":"8.8.8.8","hostname":"outside-host"},
+            ],
+        })
+        with conn() as db:
+            rows=db.execute("SELECT ip_address FROM network_discoveries WHERE hostname IN ('allowed-host','outside-host')").fetchall()
+        self.assertEqual([r["ip_address"] for r in rows],["192.168.50.15"])
+
     def test_hypervisor_provider_status(self):
         from unittest.mock import patch
         with patch("app.main.configured_providers", return_value=[
