@@ -82,7 +82,6 @@ class NvdPaginationTests(unittest.TestCase):
         search.return_value = {"vulnerabilities": [{"cve": {
             "id": "CVE-2025-0001",
             "descriptions": [{"lang": "en", "value": "Example vulnerability"}],
-            "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}]},
             "weaknesses": [{"description": [{"value": "CWE-79"}]}],
             "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}],
                         "ssvcV203": [{"source": "CISA-ADP", "ssvcData": {"role": "Coordinator",
