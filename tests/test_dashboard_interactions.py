@@ -31,7 +31,7 @@ class DashboardInteractionContractTests(unittest.TestCase):
         )
 
     def test_all_html_ids_are_unique(self):
-        ids = re.findall(r'\\bid="([^"]+)"', self.html)
+        ids = re.findall(r'id="([^"]+)"', self.html)
         duplicates = sorted({item for item in ids if ids.count(item) > 1})
         self.assertEqual(
             duplicates,
