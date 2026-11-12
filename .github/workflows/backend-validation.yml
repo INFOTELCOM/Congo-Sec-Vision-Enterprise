@@ -36,7 +36,7 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Build production API image
-        run: docker build --pull -t congo-sec-vision:ci 
+        run: docker build --pull -t congo-sec-vision:ci .
       - name: Package clean source snapshot
         run: |
           git archive --format=zip --prefix=Congo-Sec-Vision-Enterprise/ -o /tmp/Congo-Sec-Vision-Enterprise.zip HEAD
@@ -46,4 +46,4 @@ jobs:
           name: Congo-Sec-Vision-Enterprise-source
           path: /tmp/Congo-Sec-Vision-Enterprise.zip
           if-no-files-found: error
-          retention-days: 7.
+          retention-days: 7
