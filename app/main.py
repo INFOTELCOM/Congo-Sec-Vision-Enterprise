@@ -5,10 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from app.ai_engine import analyze_logs, cve_remediation_advice
-from app.cve_engine import scan_product
+from app.cve_engine import (scan_product, search_nvd_catalog, get_nvd_cve, get_nvd_cve_history, search_nvd_cpes, search_nvd_cpe_matches)
 from app.authz import get_user_roles
 from app.hypervisors import HypervisorError, configured_providers, inventory as collect_hypervisor_inventory
+from app.hypervisor_lab import lab_inventory as get_hypervisor_lab_inventory
 from app.network_discovery import discover_network, validate_network
+from app.opencve import OpenCVEError, check_connection as check_opencve_connection, search_cves as search_opencve_cves, get_cve as get_opencve_cve, get_cve_changes as get_opencve_changes
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -16,6 +18,8 @@ SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
 _internal_task = contextvars.ContextVar("csv_internal_task", default=False)
 ENROLL = os.getenv("AGENT_ENROLLMENT_TOKEN", "")
 NVD_API_KEY = os.getenv("NVD_API_KEY", "")
+OPENCVE_API_TOKEN = os.getenv("OPENCVE_API_TOKEN", "").strip()
+VBOX_COLLECTOR_TOKEN = os.getenv("CSV_VBOX_COLLECTOR_TOKEN", "").strip()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
@@ -108,6 +112,11 @@ def init():
           hostname TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'reachable',
           source TEXT NOT NULL DEFAULT 'icmp', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
           UNIQUE(cidr,ip_address))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS hypervisor_host_inventory(
+          provider TEXT NOT NULL, vm_id TEXT NOT NULL, name TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'unknown', metadata TEXT NOT NULL DEFAULT '{}',
+          last_seen TEXT NOT NULL, updated_by TEXT NOT NULL DEFAULT 'host-collector',
+          PRIMARY KEY(provider,vm_id))""")
 if not SUPABASE_URL or not SUPABASE_PUBLISHABLE_KEY or not ENROLL:
     raise RuntimeError("SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY and AGENT_ENROLLMENT_TOKEN must be set; see .env.example")
 init()
@@ -236,6 +245,9 @@ def asset_json(a, online=None):
 
 @app.get("/")
 def index(): return FileResponse("app/static/index.html")
+
+@app.get("/config.js")
+def public_web_config(): return FileResponse("app/static/config.js", media_type="application/javascript")
 @app.get("/health")
 @app.get("/api/health")
 def health(): return {"status":"ok","service":"Congo Sec Vision API","version":"0.3.1","time":now()}
@@ -687,7 +699,9 @@ async def create_event(request:Request,authorization:str|None=Header(default=Non
     audit("event.create", d.get("asset_id",""), d.get("message",""))
     return {"created":True}
 @app.get("/api/config")
-def config(): return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD","cve_automatic_sync":True,"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"cve_sync_interval_minutes":max(5,int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",str(max(5,int(float(os.getenv("CVE_SYNC_INTERVAL_HOURS","0.25"))*60)))))),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
+def config(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    return {"product":"Congo Sec Vision","version":"0.4.0","mode":"laboratory","cve_provider":"NVD + OpenCVE","cve_automatic_sync":True,"nvd_api_key_configured":bool(NVD_API_KEY),"opencve_configured":bool(OPENCVE_API_TOKEN),"cve_sync_interval_hours":int(os.getenv("CVE_SYNC_INTERVAL_HOURS","1")),"cve_sync_interval_minutes":max(5,int(os.getenv("CVE_SYNC_INTERVAL_MINUTES",str(max(5,int(float(os.getenv("CVE_SYNC_INTERVAL_HOURS","0.25"))*60)))))),"llm_configured":bool(LLM_BASE_URL and LLM_MODEL),"llm_model":LLM_MODEL or None,"ai_mode":"LLM configured" if LLM_BASE_URL and LLM_MODEL else "local-rules"}
 
 
 # --- SOC Enterprise modules: incident lifecycle, audit, team, approvals, exports ---
@@ -943,6 +957,214 @@ def supabase_soc_request(resource, method, authorization, payload=None):
         raise HTTPException(502, "Réponse invalide de Supabase Data API") from None
 
 
+@app.get("/api/nvd/status")
+def nvd_status(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    return {
+        "configured": True,
+        "source": "NVD CVE API 2.0",
+        "api_key_configured": bool(NVD_API_KEY),
+        "rate_limit_mode": "api-key" if NVD_API_KEY else "conservative",
+        "features": ["CVE search", "CVE details", "CVE change history", "CPE dictionary", "CPE match criteria"],
+    }
+
+
+@app.get("/api/nvd/cves")
+def nvd_search(
+    q: str = "", cve_id: str = "", cpe_name: str = "", vuln_status: str = "",
+    has_kev: bool | None = None, page: int = 1, page_size: int = 50,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return search_nvd_catalog(
+            keyword=q, cve_id=cve_id, cpe_name=cpe_name, vuln_status=vuln_status,
+            has_kev=has_kev, page=page, page_size=page_size, api_key=NVD_API_KEY,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD a répondu HTTP {exc.code}; vérifie la limite de requêtes ou la clé API.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD est momentanément inaccessible depuis le serveur.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cves/{cve_id}/history")
+def nvd_history(
+    cve_id: str, page: int = 1, page_size: int = 20,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return get_nvd_cve_history(cve_id, page=page, page_size=page_size, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD History a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD History est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD History invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cves/{cve_id}")
+def nvd_detail(cve_id: str, authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    try:
+        return get_nvd_cve(cve_id, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cpes")
+def nvd_cpe_search(
+    q: str, page: int = 1, page_size: int = 50,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return search_nvd_cpes(q, page=page, page_size=page_size, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD CPE a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "Le dictionnaire NVD CPE est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD CPE invalide ou inattendue.") from None
+
+
+@app.get("/api/nvd/cpe-matches")
+def nvd_cpe_match_search(
+    q: str, page: int = 1, page_size: int = 50,
+    authorization: str | None = Header(default=None),
+):
+    require_read(authorization)
+    try:
+        return search_nvd_cpe_matches(q, page=page, page_size=page_size, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD CPE Match a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "Le catalogue NVD CPE Match est momentanément inaccessible.") from None
+    except Exception:
+        raise HTTPException(502, "Réponse NVD CPE Match invalide ou inattendue.") from None
+
+
+@app.get("/api/cve/intelligence/{cve_id}")
+def combined_cve_intelligence(cve_id: str, authorization: str | None = Header(default=None)):
+    """Combine NVD authority with optional OpenCVE context; failures remain source-specific."""
+    require_read(authorization)
+    try:
+        nvd = get_nvd_cve(cve_id, api_key=NVD_API_KEY)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(503, f"NVD a répondu HTTP {exc.code}.") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "NVD est momentanément inaccessible.") from None
+    result = {"cve_id": cve_id.upper(), "nvd": nvd, "opencve": None, "opencve_history": None,
+              "opencve_status": "not-configured", "opencve_message": ""}
+    if OPENCVE_API_TOKEN:
+        try:
+            result["opencve"] = get_opencve_cve(cve_id)
+            result["opencve_history"] = get_opencve_changes(cve_id, page=1, page_size=10)
+            result["opencve_status"] = "available"
+        except OpenCVEError as exc:
+            result["opencve_status"] = "unavailable"
+            result["opencve_message"] = str(exc)
+    return result
+
+
+@app.get("/api/opencve/status")
+def opencve_status(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    if not OPENCVE_API_TOKEN:
+        return {"configured": False, "connected": False, "message": "Jeton OPENCVE_API_TOKEN absent du serveur."}
+    try:
+        return check_opencve_connection()
+    except OpenCVEError as exc:
+        return {"configured": True, "connected": False, "message": str(exc)}
+
+
+@app.get("/api/opencve/cves")
+def opencve_catalog(q: str = "", page: int = 1, page_size: int = 50,
+                    authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    try:
+        return search_opencve_cves(q, page, page_size)
+    except OpenCVEError as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.get("/api/opencve/cves/{cve_id}/changes")
+def opencve_cve_changes(cve_id: str, page: int = 1, page_size: int = 20,
+                        authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    try:
+        return get_opencve_changes(cve_id, page, page_size)
+    except OpenCVEError as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.get("/api/opencve/cves/{cve_id}")
+def opencve_cve_detail(cve_id: str, authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    try:
+        return get_opencve_cve(cve_id)
+    except OpenCVEError as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
+@app.post("/api/hypervisors/virtualbox/ingest")
+async def ingest_virtualbox_host_inventory(
+    request: Request,
+    x_collector_token: str | None = Header(default=None, alias="X-Collector-Token"),
+):
+    """Accept read-only VBoxManage inventory from the Windows host collector."""
+    if not VBOX_COLLECTOR_TOKEN:
+        raise HTTPException(503, "CSV_VBOX_COLLECTOR_TOKEN n'est pas configuré côté serveur.")
+    if not x_collector_token or not secrets.compare_digest(x_collector_token, VBOX_COLLECTOR_TOKEN):
+        raise HTTPException(401, "Jeton du collecteur VirtualBox invalide.")
+    data = await request.json()
+    machines = data.get("machines") if isinstance(data, dict) else None
+    if not isinstance(machines, list) or len(machines) > 2000:
+        raise HTTPException(400, "Le corps doit contenir une liste machines de 0 à 2000 éléments.")
+    stamp = now()
+    received = 0
+    with conn() as db:
+        for machine in machines:
+            if not isinstance(machine, dict):
+                continue
+            vm_id = str(machine.get("id") or "").strip()[:255]
+            name = str(machine.get("name") or vm_id).strip()[:255]
+            if not vm_id or not name:
+                continue
+            metadata = machine.get("metadata") if isinstance(machine.get("metadata"), dict) else {}
+            db.execute("""INSERT INTO hypervisor_host_inventory(provider,vm_id,name,state,metadata,last_seen,updated_by)
+              VALUES('virtualbox',?,?,?,?,?,'windows-vboxmanage')
+              ON CONFLICT(provider,vm_id) DO UPDATE SET name=excluded.name,state=excluded.state,
+              metadata=excluded.metadata,last_seen=excluded.last_seen,updated_by=excluded.updated_by""",
+              (vm_id, name, str(machine.get("state") or "unknown")[:80],
+               json.dumps(metadata, ensure_ascii=False)[:12000], stamp))
+            received += 1
+    audit("hypervisor.virtualbox.host_ingest", "virtualbox", f"{received} machine(s) reçue(s)", "windows-vboxmanage")
+    return {"received": received, "provider": "virtualbox", "read_only": True, "timestamp": stamp}
+
+
 @app.get("/api/hypervisors/providers")
 def hypervisor_providers(authorization: str | None = Header(default=None)):
     require_read(authorization)
@@ -952,11 +1174,29 @@ def hypervisor_providers(authorization: str | None = Header(default=None)):
 @app.get("/api/hypervisors/inventory")
 def list_hypervisor_inventory(authorization: str | None = Header(default=None)):
     require_read(authorization)
-    return supabase_soc_request(
+    remote = supabase_soc_request(
         "hypervisor_inventory?select=provider,vm_id,name,state,metadata,last_seen,updated_by"
         "&order=provider.asc,name.asc&limit=1000",
         "GET", authorization,
     )
+    known = {(str(row.get("provider")), str(row.get("vm_id"))) for row in remote if isinstance(row, dict)}
+    with conn() as db:
+        local = db.execute(
+            "SELECT provider,vm_id,name,state,metadata,last_seen,updated_by FROM hypervisor_host_inventory "
+            "ORDER BY name LIMIT 2000"
+        ).fetchall()
+    for row in local:
+        key = (row["provider"], row["vm_id"])
+        if key in known:
+            continue
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.get("metadata") or "{}")
+        except (TypeError, ValueError):
+            item["metadata"] = {}
+        item["source"] = "host-collector"
+        remote.append(item)
+    return remote
 
 
 @app.post("/api/hypervisors/sync")
@@ -969,7 +1209,26 @@ def sync_hypervisor_inventory(authorization: str | None = Header(default=None)):
             outcomes.append({"provider": name, "status": "not-configured", "saved": 0})
             continue
         try:
-            machines = collect_hypervisor_inventory(name)
+            if name == "virtualbox" and provider.get("host_collector"):
+                with conn() as db:
+                    local_rows = db.execute(
+                        "SELECT vm_id,name,state,metadata FROM hypervisor_host_inventory "
+                        "WHERE provider='virtualbox' ORDER BY name LIMIT 2000"
+                    ).fetchall()
+                machines = []
+                for row in local_rows:
+                    try:
+                        metadata = json.loads(row["metadata"] or "{}")
+                    except (TypeError, ValueError):
+                        metadata = {}
+                    machines.append({"id": row["vm_id"], "name": row["name"],
+                                     "state": row["state"], "metadata": metadata})
+                if not machines:
+                    outcomes.append({"provider": name, "status": "no-data", "saved": 0,
+                                     "message": "Collecteur hôte configuré, mais aucun inventaire n'a encore été reçu."})
+                    continue
+            else:
+                machines = collect_hypervisor_inventory(name)
             stamp = now()
             records = []
             for machine in machines[:2000]:
@@ -996,6 +1255,49 @@ def sync_hypervisor_inventory(authorization: str | None = Header(default=None)):
             outcomes.append({"provider": name, "status": "error", "saved": 0, "message": str(detail)[:240]})
     audit("hypervisor.inventory.sync", "all-providers", json.dumps(outcomes, ensure_ascii=False), actor)
     return {"results": outcomes, "read_only": True, "timestamp": now()}
+
+@app.get("/api/hypervisors/lab/inventory")
+def hypervisor_lab_inventory(authorization: str | None = Header(default=None)):
+    """Synthetic inventory is isolated from the live Supabase inventory."""
+    require_read(authorization)
+    return get_hypervisor_lab_inventory()
+
+
+@app.post("/api/hypervisors/providers/check")
+def check_hypervisor_providers(authorization: str | None = Header(default=None)):
+    """Probe configured providers with inventory-only requests; never persists results."""
+    actor = require_analyst(authorization)
+    outcomes = []
+    for provider in configured_providers():
+        name = provider["provider"]
+        if not provider["configured"]:
+            outcomes.append({"provider": name, "status": "not-configured", "machines": 0})
+            continue
+        try:
+            if name == "virtualbox" and provider.get("host_collector"):
+                with conn() as db:
+                    rows = db.execute(
+                        "SELECT COUNT(*) AS count, MAX(last_seen) AS last_seen FROM hypervisor_host_inventory "
+                        "WHERE provider='virtualbox'"
+                    ).fetchone()
+                outcomes.append({
+                    "provider": name,
+                    "status": "reachable" if rows["count"] else "no-data",
+                    "machines": int(rows["count"] or 0),
+                    "last_seen": rows["last_seen"],
+                    "message": "" if rows["count"] else "En attente de la première remontée du collecteur Windows.",
+                    "read_only": True,
+                })
+                continue
+            machines = collect_hypervisor_inventory(name)
+            outcomes.append({"provider": name, "status": "reachable", "machines": len(machines),
+                             "read_only": True})
+        except HypervisorError as exc:
+            outcomes.append({"provider": name, "status": "error", "machines": 0,
+                             "message": str(exc)[:200]})
+    audit("hypervisor.providers.check", "all-providers", json.dumps(outcomes, ensure_ascii=False), actor)
+    return {"results": outcomes, "read_only": True, "persisted": False, "timestamp": now()}
+
 
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
