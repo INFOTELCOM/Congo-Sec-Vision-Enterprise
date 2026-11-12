@@ -30,6 +30,15 @@ class DashboardInteractionContractTests(unittest.TestCase):
             "Every inline dashboard button/input handler must resolve to a function.",
         )
 
+    def test_all_html_ids_are_unique(self):
+        ids = re.findall(r'\\bid="([^"]+)"', self.html)
+        duplicates = sorted({item for item in ids if ids.count(item) > 1})
+        self.assertEqual(
+            duplicates,
+            [],
+            "HTML element IDs must be unique; duplicate IDs can break page navigation.",
+        )
+
     def test_navigation_targets_have_matching_dashboard_sections(self):
         targets = set(re.findall(r'data-page="([a-z0-9_-]+)"', self.html))
         sections = set(re.findall(
