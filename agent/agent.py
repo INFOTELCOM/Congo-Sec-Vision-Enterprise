@@ -239,7 +239,7 @@ def collect_logs():
             try:
                 item = json.loads(line)
                 stamp = item.get("__REALTIME_TIMESTAMP")
-                timestamp = datetime.fromtimestamp(int(stamp) / 1000000, timezone.utc).isoformat() if stamp else now()
+                timestamp = datetime.fromtimestamp(int(stamp) / 1000000, timezone.utc).isoformat() if stamp else datetime.now(timezone.utc).isoformat()
                 logs.append({"timestamp": timestamp, "source": "journald",
                              "severity": str(item.get("PRIORITY") or "info"),
                              "message": str(item.get("MESSAGE") or "")[:4000]})
