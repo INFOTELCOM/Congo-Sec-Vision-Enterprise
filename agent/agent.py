@@ -85,7 +85,7 @@ def os_installation_info():
 def software_inventory():
     items = []
     if platform.system() == "Windows":
-        script = "Get-ItemProperty HKLM:\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*,HKLM:\\Software\\\\WOW6432Node\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\* | Where-Object DisplayName | Select-Object -First 500 DisplayName,DisplayVersion,Publisher,InstallDate,InstallLocation,PSChildName | ConvertTo-Json -Compress"
+        script = r"Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object DisplayName | Select-Object -First 500 DisplayName,DisplayVersion,Publisher,InstallDate,InstallLocation,PSChildName | ConvertTo-Json -Compress"
         raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 25)
         try:
             data = json.loads(raw or "[]")
@@ -110,7 +110,7 @@ def software_inventory():
     elif shutil.which("dpkg-query"):
         raw = run(["dpkg-query", "-W", "-f=${binary:Package}\\t${Version}\\t${Maintainer}\\n"], 25)
         for line in raw.splitlines()[:1500]:
-            p = line.split("\\t")
+            p = line.split(chr(9))
             if len(p) >= 2:
                 items.append({"name": p[0], "version": p[1], "vendor": p[2] if len(p) > 2 else "",
                               "installed_at": "", "install_location": "", "install_scope": "system",
@@ -118,7 +118,7 @@ def software_inventory():
     elif shutil.which("rpm"):
         raw = run(["rpm", "-qa", "--qf", "%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{VENDOR}\\t%{INSTALLTIME:date}\\n"], 25)
         for line in raw.splitlines()[:1500]:
-            p = line.split("\\t")
+            p = line.split(chr(9))
             if len(p) >= 2:
                 installed_at = ""
                 if len(p) > 3:
@@ -135,7 +135,7 @@ def software_inventory():
 def endpoint_protection():
     """Collect native protection state; never claim a clean scan when none was run."""
     if platform.system() == "Windows":
-        script = "$s=Get-MpComputerStatus -ErrorAction SilentlyContinue; $d=@(Get-MpThreatDetection -ErrorAction SilentlyContinue | Select-Object ThreatID,ThreatName,InitialDetectionTime,ActionSuccess,Resources); $p=@(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue | Select-Object displayName,pathToSignedProductExe,productState); [pscustomobject]@{Defender=if($s){[pscustomobject]@{AntivirusEnabled=$s.AntivirusEnabled;AntispywareEnabled=$s.AntispywareEnabled;RealTimeProtectionEnabled=$s.RealTimeProtectionEnabled;BehaviorMonitorEnabled=$s.BehaviorMonitorEnabled;SignatureVersion=$s.AntivirusSignatureVersion;SignatureUpdated=$s.AntivirusSignatureLastUpdated;QuickScanEndTime=$s.QuickScanEndTime;FullScanEndTime=$s.FullScanEndTime}}else{$null};Products=$p;Detections=$d} | ConvertTo-Json -Depth 5 -Compress"
+        script = "$s=Get-MpComputerStatus -ErrorAction SilentlyContinue; $d=@(Get-MpThreatDetection -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ThreatID=$_.ThreatID;ThreatName=$_.ThreatName;InitialDetectionTime=if($_.InitialDetectionTime){$_.InitialDetectionTime.ToUniversalTime().ToString('o')}else{$null};ActionSuccess=$_.ActionSuccess;Resources=@($_.Resources)}}); $p=@(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue | Select-Object displayName,pathToSignedProductExe,productState); [pscustomobject]@{Defender=if($s){[pscustomobject]@{AntivirusEnabled=$s.AntivirusEnabled;AntispywareEnabled=$s.AntispywareEnabled;RealTimeProtectionEnabled=$s.RealTimeProtectionEnabled;BehaviorMonitorEnabled=$s.BehaviorMonitorEnabled;SignatureVersion=$s.AntivirusSignatureVersion;SignatureUpdated=if($s.AntivirusSignatureLastUpdated){$s.AntivirusSignatureLastUpdated.ToUniversalTime().ToString('o')}else{$null};QuickScanEndTime=if($s.QuickScanEndTime){$s.QuickScanEndTime.ToUniversalTime().ToString('o')}else{$null};FullScanEndTime=if($s.FullScanEndTime){$s.FullScanEndTime.ToUniversalTime().ToString('o')}else{$null}}}else{$null};Products=$p;Detections=$d} | ConvertTo-Json -Depth 5 -Compress"
         raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 20)
         try:
             data = json.loads(raw or "{}")
@@ -201,22 +201,52 @@ def collect_listening_ports():
 
 
 def collect_logs():
-    logs=[]
-    if platform.system()=="Windows":
-        ps="Get-WinEvent -FilterHashtable @{LogName='System';StartTime=(Get-Date).AddMinutes(-2)} -MaxEvents 40 -ErrorAction SilentlyContinue | Select-Object TimeCreated,Id,LevelDisplayName,ProviderName,Message | ConvertTo-Json -Compress"
-        raw=run(["powershell","-NoProfile","-NonInteractive","-Command",ps],18)
+    logs = []
+    if platform.system() == "Windows":
+        ps = "$logs=@('System','Application','Security','Microsoft-Windows-Windows Defender/Operational'); $events=@(); foreach($log in $logs){try{$events+=Get-WinEvent -FilterHashtable @{LogName=$log;StartTime=(Get-Date).AddMinutes(-3)} -MaxEvents 35 -ErrorAction Stop}catch{}}; $events | Sort-Object TimeCreated -Descending | Select-Object -First 100 | ForEach-Object {[pscustomobject]@{TimeCreatedUtc=$_.TimeCreated.ToUniversalTime().ToString('o');Id=$_.Id;RecordId=$_.RecordId;LevelDisplayName=$_.LevelDisplayName;ProviderName=$_.ProviderName;Channel=$_.LogName;Machine=$_.MachineName;Message=$_.Message}} | ConvertTo-Json -Depth 4 -Compress"
+        raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], 22)
         try:
-            data=json.loads(raw or "[]")
-            if isinstance(data,dict): data=[data]
+            data = json.loads(raw or "[]")
+            if isinstance(data, dict):
+                data = [data]
+            severity_map = {
+                "critical": "critical", "critique": "critical", "error": "high", "erreur": "high",
+                "warning": "medium", "avertissement": "medium", "information": "info", "informational": "info"
+            }
             for x in data:
-                logs.append({"timestamp":str(x.get("TimeCreated") or ""),"source":x.get("ProviderName","Windows System"),
-                             "severity":str(x.get("LevelDisplayName","info")).lower(),"message":f"EventID={x.get('Id')} {x.get('Message','')}"})
-        except Exception: pass
+                raw_level = str(x.get("LevelDisplayName") or "info").strip().lower()
+                raw_time = str(x.get("TimeCreatedUtc") or "").strip()
+                try:
+                    timestamp = datetime.fromisoformat(raw_time.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+                except (ValueError, TypeError):
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                event_id = x.get("Id")
+                logs.append({
+                    "timestamp": timestamp, "source": str(x.get("ProviderName") or "Windows System")[:160],
+                    "provider": str(x.get("ProviderName") or "Windows System")[:160],
+                    "channel": str(x.get("Channel") or "System")[:100],
+                    "machine": str(x.get("Machine") or socket.gethostname())[:255],
+                    "event_id": int(event_id) if str(event_id or "").isdigit() else None,
+                    "record_id": int(x.get("RecordId") or 0) or None,
+                    "severity": severity_map.get(raw_level, raw_level[:24]),
+                    "message": f"EventID={event_id} {x.get('Message', '')}"[:4000]
+                })
+        except (ValueError, TypeError, AttributeError):
+            pass
     elif shutil.which("journalctl"):
-        raw=run(["journalctl","--since","2 minutes ago","-n","60","--no-pager","-o","short-iso"],15)
-        for line in raw.splitlines()[-60:]:
-            logs.append({"source":"journald","severity":"info","message":line})
+        raw = run(["journalctl", "--since", "3 minutes ago", "-n", "80", "--no-pager", "-o", "json"], 15)
+        for line in raw.splitlines()[-80:]:
+            try:
+                item = json.loads(line)
+                stamp = item.get("__REALTIME_TIMESTAMP")
+                timestamp = datetime.fromtimestamp(int(stamp) / 1000000, timezone.utc).isoformat() if stamp else now()
+                logs.append({"timestamp": timestamp, "source": "journald",
+                             "severity": str(item.get("PRIORITY") or "info"),
+                             "message": str(item.get("MESSAGE") or "")[:4000]})
+            except (ValueError, TypeError):
+                continue
     return logs
+
 def detect_virtualization():
     """Best-effort guest VM detection; does not query or control the hypervisor."""
     system = platform.system()
