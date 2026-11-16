@@ -503,7 +503,7 @@ def sync_endpoint_telemetry(asset_id, data):
         if detections:
             send_batches("soc_malware_detections?on_conflict=dedupe_key", detections)
         if listeners:
-            supabase_public_request("soc_listening_ports?asset_id=eq." + urllib.parse.quote(asset_id, safe=""), "PATCH", {"is_current": False})
+            supabase_public_request("soc_listening_ports?asset_id=eq." + urllib.parse.quote(asset_id, safe="") + "&source=eq.endpoint-listener-enumeration", "PATCH", {"is_current": False})
             send_batches("soc_listening_ports?on_conflict=ip_address,protocol,port", listeners)
         if devices:
             send_batches("soc_network_devices?on_conflict=network_cidr,ip_address", devices)
@@ -1191,7 +1191,7 @@ async def run_attack_surface_scan(request: Request, authorization: str | None = 
             "(ip_address.gte." + str(network.network_address) + ",ip_address.lte." + str(network.broadcast_address) + ")",
             safe=""
         )
-        supabase_public_request("soc_listening_ports?" + port_range_filter, "PATCH", {"is_current": False})
+        supabase_public_request("soc_listening_ports?" + port_range_filter + "&source=eq.authorized-network-tcp-scan", "PATCH", {"is_current": False})
         device_payload = []
         for host in hosts:
             opened = host.get("open_ports") or []
