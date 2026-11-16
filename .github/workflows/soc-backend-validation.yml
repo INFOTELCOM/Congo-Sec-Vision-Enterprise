@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - integration/existing-platform-hardening
 
 jobs:
   python-validation:
