@@ -42,6 +42,7 @@ Les migrations incrémentales appliquées au projet sont conservées dans `datab
 
 - `20261116073821_cve_intelligence_opencve_catalog.sql`
 - `20261116073937_cve_intelligence_policy_precision.sql`
+- `20261116074155_cve_intelligence_admin_delete_grant.sql`
 
 `schema.sql` est le socle historique initial ; les migrations incrémentales décrivent les évolutions appliquées ensuite. Vérifier les politiques RLS et les grants après toute évolution du schéma.
 
