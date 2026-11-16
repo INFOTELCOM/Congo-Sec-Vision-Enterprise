@@ -152,6 +152,41 @@ def detect_virtualization():
             "detection_method": "guest_os_heuristic", "hypervisor_api_connected": False}
 
 
+def collect_network_connections():
+    """Collect connection metadata only; never captures packet payloads or message contents."""
+    items=[]
+    try: connections=psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, OSError): connections=[]
+    for c in connections[:500]:
+        try:
+            local_ip=c.laddr.ip if c.laddr else ""
+            remote_ip=c.raddr.ip if c.raddr else ""
+            pname=""
+            if c.pid:
+                try: pname=psutil.Process(c.pid).name()
+                except (psutil.NoSuchProcess, psutil.AccessDenied): pass
+            items.append({"protocol":"tcp" if c.type==socket.SOCK_STREAM else "udp",
+                "local_address":local_ip,"local_port":c.laddr.port if c.laddr else 0,
+                "remote_address":remote_ip,"remote_port":c.raddr.port if c.raddr else 0,
+                "status":str(c.status or "NONE"),"pid":c.pid or 0,"process_name":pname[:255],
+                "observed_at":datetime.now(timezone.utc).isoformat()})
+        except (AttributeError, OSError, ValueError): continue
+    return items
+
+def collect_processes():
+    """Collect a bounded process inventory without command-line arguments or user data."""
+    items=[]
+    for p in psutil.process_iter(["pid","name","exe","create_time"]):
+        if len(items)>=500: break
+        try:
+            info=p.info
+            items.append({"pid":int(info.get("pid") or 0),"name":str(info.get("name") or "")[:255],
+                "executable":str(info.get("exe") or "")[:1000],
+                "started_at":datetime.fromtimestamp(info["create_time"],timezone.utc).isoformat()
+                    if info.get("create_time") else ""})
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError, ValueError): continue
+    return items
+
 def collect():
     vm=psutil.virtual_memory(); disk=psutil.disk_usage(os.path.abspath(os.sep))
     return {"hostname":socket.gethostname(),"platform":platform.system(),"platform_release":platform.release(),
@@ -160,6 +195,7 @@ def collect():
       "ip_addresses":[{"interface":x["interface"],"address":x["address"]} for x in local_interfaces()],
       "interfaces":local_interfaces(),"network_discoveries":discover_connected_networks(),
       "software":software_inventory(),"logs":collect_logs(),
+      "network_connections":collect_network_connections(),"processes":collect_processes(),
       "virtualization":detect_virtualization(),"agent_version":"0.2.0","collected_at":datetime.now(timezone.utc).isoformat()}
 def post(url,payload,token=None):
     req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={"Content-Type":"application/json",**({"Authorization":"Bearer "+token} if token else {})},method="POST")
