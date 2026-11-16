@@ -181,5 +181,41 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(response.json()["results"][1]["status"], "not-configured")
         self.assertEqual(request.call_args.args[0], "hypervisor_inventory?on_conflict=provider,vm_id")
 
+    def test_attack_surface_scan_rejects_public_network(self):
+        from unittest.mock import patch
+        with patch("app.main.supabase_public_configured", return_value=True), \
+             patch("app.main.supabase_public_request") as supabase:
+            response = self.client.post("/api/network/attack-surface-scan", headers=self.headers,
+                                        json={"cidr":"8.8.8.0/24"})
+        self.assertEqual(response.status_code, 400)
+        supabase.assert_not_called()
+
+    def test_attack_surface_scan_persists_discovered_ports(self):
+        from unittest.mock import patch
+        run_id = "123e4567-e89b-12d3-a456-426614174000"
+        scan = {
+            "targets_checked": 254, "open_ports_total": 1, "hosts_with_open_ports": 1,
+            "hosts": [{"ip_address":"192.168.1.10","hostname":"test-host","open_ports":[
+                {"port":22,"service_name":"ssh","product":"","version":"","banner":"","confidence":0.75}
+            ]}],
+            "limitations":"TCP common ports only"
+        }
+        def supabase_request(resource, method="GET", payload=None):
+            if resource == "soc_scan_runs" and method == "POST":
+                return [{"id":run_id}]
+            if resource.startswith("soc_network_devices?on_conflict=") and method == "POST":
+                return [{"id":"123e4567-e89b-12d3-a456-426614174001","ip_address":"192.168.1.10"}]
+            return []
+        with patch("app.main.supabase_public_configured", return_value=True), \
+             patch("app.main.supabase_public_request", side_effect=supabase_request) as supabase, \
+             patch("app.main.discover_network", return_value=[{"ip_address":"192.168.1.10","hostname":"test-host"}]), \
+             patch("app.main.scan_network_ports", return_value=scan):
+            response = self.client.post("/api/network/attack-surface-scan", headers=self.headers,
+                                        json={"cidr":"192.168.1.0/24"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["summary"]["open_ports"], 1)
+        self.assertEqual(response.json()["hosts"][0]["ip_address"], "192.168.1.10")
+        self.assertTrue(any("soc_listening_ports?on_conflict=" in call.args[0] for call in supabase.call_args_list))
+
 if __name__ == "__main__":
     unittest.main()
