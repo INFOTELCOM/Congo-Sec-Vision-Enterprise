@@ -50,7 +50,7 @@
  <p class="notice" id="attackSurfaceStatus">Saisis un sous-réseau privé autorisé. Le scan est limité à 256 adresses et à une liste de ports TCP courants. Aucun exploit n'est lancé.</p>
  <div class="kpi-strip" id="attackSurfaceStats"><div class="kpi"><b>—</b><span>Équipements découverts</span></div><div class="kpi"><b>—</b><span>Ports ouverts</span></div><div class="kpi"><b>—</b><span>CVE candidates</span></div><div class="kpi"><b>—</b><span>Détections antimalware</span></div></div>
  <div class="cardtitle">Équipements identifiés par adresse IP</div>
- <div class="tablewrap"><table><thead><tr><th>Adresse IP</th><th>Nom</th><th>Type</th><th>Système</th><th>Installation OS</th><th>Ports ouverts</th><th>Dernière détection</th></tr></thead><tbody id="networkDeviceRows"><tr><td colspan="6" class="empty">Aucune découverte réseau enregistrée.</td></tr></tbody></table></div>
+ <div class="tablewrap"><table><thead><tr><th>Adresse IP</th><th>Nom</th><th>Type</th><th>Système</th><th>Installation OS</th><th>Ports ouverts</th><th>Dernière détection</th></tr></thead><tbody id="networkDeviceRows"><tr><td colspan="7" class="empty">Aucune découverte réseau enregistrée.</td></tr></tbody></table></div>
 </div>
 <div class="panelgrid" style="margin-top:14px">
  <div class="card"><div class="cardtitle">Ports ouverts et services</div><div class="tablewrap"><table><thead><tr><th>IP</th><th>Port</th><th>Service</th><th>Produit / version</th><th>Source</th></tr></thead><tbody id="openPortRows"><tr><td colspan="5" class="empty">Aucun port inventorié.</td></tr></tbody></table></div></div>
@@ -146,7 +146,7 @@ async function loadThreats(){
   document.getElementById("processRows").innerHTML=procs.map(x=>'<tr><td>'+esc(x.hostname||x.asset_id)+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.pid)+'</td><td title="'+esc(x.executable)+'">'+esc(x.executable||"—")+'</td><td>'+esc(fmt(x.last_seen))+'</td></tr>').join("")||'<tr><td colspan="5" class="empty">Aucun processus remonté.</td></tr>';
   const suspiciousTerms=["spyware","keylogger","stealer","njrat","darkcomet","remcos","nanocore","quasar","xworm","mimikatz","lazagne"];
   const software=data.software||[];
-  document.getElementById("softwareRows").innerHTML=software.map(x=>{const flagged=suspiciousTerms.some(t=>(x.name+" "+x.vendor).toLowerCase().includes(t));return '<tr><td>'+esc(x.hostname||x.asset_id)+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.version||"—")+'</td><td>'+esc(x.vendor||"—")+'</td><td>'+esc(fmt(x.collected_at))+'</td><td><span class="badge '+(flagged?"off":"")+'">'+(flagged?"À examiner":"Aucun indicateur nominal")+'</span></td></tr>'}).join("")||'<tr><td colspan="6" class="empty">Aucun logiciel inventorié.</td></tr>';
+  document.getElementById("softwareRows").innerHTML=software.map(x=>{const flagged=suspiciousTerms.some(t=>(x.name+" "+x.vendor).toLowerCase().includes(t));return '<tr><td>'+esc(x.hostname||x.asset_id)+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.version||"—")+'</td><td>'+esc(x.vendor||"—")+'</td><td>'+esc(x.installed_at?fmt(x.installed_at):"Non fournie")+'</td><td>'+esc(fmt(x.collected_at))+'</td><td><span class="badge '+(flagged?"off":"")+'">'+(flagged?"À examiner":"À vérifier par réputation")+'</span></td></tr>'}).join("")||'<tr><td colspan="7" class="empty">Aucun logiciel inventorié.</td></tr>';
   const ev=await api("/api/events");
   eventsBox.innerHTML=ev.map(e=>'<div class="event"><i class="dot"></i><div><strong>'+esc(e.message)+'</strong><small>'+esc(e.severity)+' · '+esc(e.category)+' · '+esc(fmt(e.created_at))+'</small></div></div>').join("")||'<div class="empty">Aucun événement enregistré.</div>';
   await loadAttackSurface();
@@ -183,11 +183,11 @@ async function loadAttackSurface(){
   for(const asset of assets){for(const entry of (asset.ip_addresses||[])){const ip=typeof entry==="string"?entry:entry?.address;if(ip&&!deviceByIp[String(ip).split("%")[0]]){const row={ip_address:String(ip).split("%")[0],hostname:asset.hostname,device_type:"endpoint-agent",os_guess:asset.platform,status:"active",last_seen:asset.last_seen};mergedDevices.push(row);deviceByIp[row.ip_address]=row;}}}
   const critical=vulns.filter(x=>x.severity==="critical").length;
   document.getElementById("attackSurfaceStats").innerHTML=[
-   [devices.length,"Équipements découverts"],[ports.filter(x=>x.state==="open").length,"Ports ouverts"],
-   [vulns.length,"CVE candidates ("+critical+" critiques)"],[malware.filter(x=>!["resolved","removed","quarantined"].includes(x.status)).length,"Détections antimalware ouvertes"]
+   [devices.length,"Équipements découverts"],[ports.filter(x=>["open","LISTEN","BOUND"].includes(x.state)).length,"Ports ouverts / en écoute"],
+   [vulns.length,"CVE candidates ("+critical+" critiques)"],[malware.filter(x=>!["resolved","removed","quarantined","false_positive","allowed"].includes(x.status)).length,"Détections antimalware ouvertes"]
   ].map(x=>'<div class="kpi"><b>'+esc(x[0])+'</b><span>'+esc(x[1])+'</span></div>').join("");
   document.getElementById("networkDeviceRows").innerHTML=mergedDevices.map(x=>{
-   const count=ports.filter(p=>p.ip_address===x.ip_address&&p.state==="open").length;
+   const count=ports.filter(p=>p.ip_address===x.ip_address&&["open","LISTEN","BOUND"].includes(p.state)).length;
    const asset=assetByIp[String(x.ip_address)]||null;
    return '<tr><td><b>'+esc(x.ip_address)+'</b></td><td>'+esc(x.hostname||"—")+'</td><td>'+esc(x.device_type||"unknown")+'</td><td>'+esc(x.os_guess||asset?.platform||"Non déterminé")+'</td><td>'+esc(asset?.os_install_date||"Non fournie")+'</td><td>'+count+'</td><td>'+esc(fmt(x.last_seen))+'</td></tr>';
   }).join("")||'<tr><td colspan="7" class="empty">Aucune IP découverte. Lance un scan sur un CIDR autorisé.</td></tr>';
