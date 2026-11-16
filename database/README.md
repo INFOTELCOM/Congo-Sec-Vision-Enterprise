@@ -6,7 +6,7 @@ Schéma SOC : `soc` (exposé à la Data API après configuration PostgREST)
 
 ## Modèle de données SOC
 
-Le schéma `soc` héberge les données opérationnelles de la plateforme : profils et rôles, actifs, inventaire des hyperviseurs, événements, vulnérabilités par actif, incidents, logiciels, résultats d'analyse, audit, équipes, approbations et workflows.
+Le schéma `soc` héberge les données opérationnelles de la plateforme : profils et rôles, actifs, inventaire des hyperviseurs, découvertes réseau, événements, vulnérabilités enrichies par actif, historique et abonnements CVE, notifications, incidents, logiciels, résultats d'analyse, audit, équipes, approbations et workflows.
 
 La table `soc.hypervisor_inventory` conserve l'inventaire collecté auprès des fournisseurs VMware, Proxmox, VirtualBox et Hyper-V. Les connecteurs et l'API d'ingestion sont côté backend ; la création de la table ne signifie pas qu'un hyperviseur est déjà authentifié ou joignable.
 
@@ -43,6 +43,8 @@ Les migrations incrémentales appliquées au projet sont conservées dans `datab
 - `20261116073821_cve_intelligence_opencve_catalog.sql`
 - `20261116073937_cve_intelligence_policy_precision.sql`
 - `20261116074155_cve_intelligence_admin_delete_grant.sql`
+- `20261116074252_soc_network_discovery_and_cve_metadata.sql`
+- `20261116074301_soc_cve_metadata_type_alignment.sql`
 
 `schema.sql` est le socle historique initial ; les migrations incrémentales décrivent les évolutions appliquées ensuite. Vérifier les politiques RLS et les grants après toute évolution du schéma.
 
