@@ -1,0 +1,23 @@
+# Local secrets and runtime configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local databases and runtime artifacts
+*.db
+*.sqlite
+*.sqlite3
+/data/
+
+# Test and build artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
