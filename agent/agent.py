@@ -124,7 +124,8 @@ def software_inventory():
                                 continue
             except OSError:
                 continue
-        raw = run(["dpkg-query", "-W", "-f=\${binary:Package}\\\\t\${Version}\\\\t\${Maintainer}\\\\n"], 25)
+        format_string = "-f=" + chr(36) + "{binary:Package}\\t" + chr(36) + "{Version}\\t" + chr(36) + "{Maintainer}\\n"
+        raw = run(["dpkg-query", "-W", format_string], 25)
         for line in raw.splitlines()[:1500]:
             p = line.split(chr(9))
             if len(p) >= 2:
