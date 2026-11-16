@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 import psutil
 
 def run(cmd, timeout=12):
-    try: return subprocess.run(cmd,capture_output=True,text=True,timeout=timeout,errors="replace").stdout
+    try:
+        command = list(cmd)
+        if command and os.path.basename(str(command[0])).lower().startswith("powershell"):
+            command[-1] = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding; $OutputEncoding = [Console]::OutputEncoding; " + str(command[-1])
+        return subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=timeout, errors="replace").stdout
     except Exception: return ""
 def local_interfaces():
     result=[]
@@ -81,7 +85,7 @@ def os_installation_info():
 def software_inventory():
     items = []
     if platform.system() == "Windows":
-        script = "Get-ItemProperty HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*,HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\* | Where-Object DisplayName | Select-Object -First 500 DisplayName,DisplayVersion,Publisher,InstallDate,InstallLocation,PSChildName | ConvertTo-Json -Compress"
+        script = "Get-ItemProperty HKLM:\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*,HKLM:\\Software\\\\WOW6432Node\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\* | Where-Object DisplayName | Select-Object -First 500 DisplayName,DisplayVersion,Publisher,InstallDate,InstallLocation,PSChildName | ConvertTo-Json -Compress"
         raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 25)
         try:
             data = json.loads(raw or "[]")
@@ -104,17 +108,17 @@ def software_inventory():
         except (ValueError, TypeError):
             pass
     elif shutil.which("dpkg-query"):
-        raw = run(["dpkg-query", "-W", "-f=\${binary:Package}\\\\t\${Version}\\\\t\${Maintainer}\\\\n"], 25)
+        raw = run(["dpkg-query", "-W", "-f=${binary:Package}\\t${Version}\\t${Maintainer}\\n"], 25)
         for line in raw.splitlines()[:1500]:
-            p = line.split("\\\\t")
+            p = line.split("\\t")
             if len(p) >= 2:
                 items.append({"name": p[0], "version": p[1], "vendor": p[2] if len(p) > 2 else "",
                               "installed_at": "", "install_location": "", "install_scope": "system",
                               "package_id": p[0]})
     elif shutil.which("rpm"):
-        raw = run(["rpm", "-qa", "--qf", "%{NAME}\\\\t%{VERSION}-%{RELEASE}\\\\t%{VENDOR}\\\\t%{INSTALLTIME:date}\\\\n"], 25)
+        raw = run(["rpm", "-qa", "--qf", "%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{VENDOR}\\t%{INSTALLTIME:date}\\n"], 25)
         for line in raw.splitlines()[:1500]:
-            p = line.split("\\\\t")
+            p = line.split("\\t")
             if len(p) >= 2:
                 installed_at = ""
                 if len(p) > 3:
