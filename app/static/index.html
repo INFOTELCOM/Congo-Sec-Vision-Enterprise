@@ -173,6 +173,8 @@ async function loadAttackSurface(){
  const status=document.getElementById("attackSurfaceStatus");
  try{
   const data=await api("/api/surveillance/attack-surface");
+  const cidrInput=document.getElementById("attackCidr");
+  if(cidrInput&&!cidrInput.value&&data.suggested_networks?.length)cidrInput.value=data.suggested_networks[0];
   const devices=data.devices||[], ports=data.ports||[], protection=data.endpoint_protection||[];
   const malware=data.malware_detections||[], software=data.software||[], vulns=data.vulnerabilities||[], assets=data.assets||[];
   const deviceByIp=Object.fromEntries(devices.map(x=>[String(x.ip_address),x]));
@@ -199,7 +201,9 @@ async function loadAttackSurface(){
   document.getElementById("malwareRows").innerHTML=malware.map(x=>'<tr><td>'+esc(x.hostname||x.asset_id||"—")+'</td><td><b>'+esc(x.threat_name)+'</b></td><td class="sev-'+esc(x.severity)+'">'+esc(x.severity)+'</td><td>'+esc(x.status)+'</td><td title="'+esc(x.file_path)+'">'+esc(x.file_path||"—")+'</td><td>'+esc(fmt(x.detected_at))+'</td></tr>').join("")||'<tr><td colspan="6" class="empty">Aucune détection antivirus remontée.</td></tr>';
   document.getElementById("networkCveRows").innerHTML=vulns.map(x=>{const asset=assetById[String(x.asset_id)]||null;const ips=asset?(asset.ip_addresses||[]).map(y=>typeof y==="string"?y:y?.address).filter(Boolean):[];const ip=x.ip_address||ips[0]||"—";return '<tr><td><a target="_blank" rel="noopener" href="'+esc(x.cve_url||("https://nvd.nist.gov/vuln/detail/"+x.cve_id))+'">'+esc(x.cve_id)+'</a></td><td>'+esc(ip)+'/'+esc(x.port||"—")+'</td><td>'+esc([x.software_name,x.software_version].filter(Boolean).join(" ")||x.service_name||"—")+'</td><td class="sev-'+esc(x.severity)+'">'+esc(x.severity)+' / '+esc(x.cvss_score??"—")+'</td><td>'+esc(x.epss_score==null?"—":(Number(x.epss_score)*100).toFixed(2)+"%")+' '+(x.known_exploited?'<span class="tag">CISA KEV</span>':"")+'</td><td>'+esc(x.match_confidence||"candidate")+'</td></tr>'}).join("")||'<tr><td colspan="6" class="empty">Aucune CVE candidate enregistrée. Les versions non révélées ne peuvent pas être rapprochées avec fiabilité.</td></tr>';
   document.getElementById("softwareRows").innerHTML=software.map(x=>'<tr><td>'+esc(x.hostname||x.asset_id)+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.version||"—")+'</td><td>'+esc(x.vendor||"—")+'</td><td>'+esc(x.installed_at?fmt(x.installed_at):"Non fournie")+'</td><td>'+esc(fmt(x.collected_at))+'</td><td><span class="badge">Inventorié</span></td></tr>').join("")||'<tr><td colspan="7" class="empty">Aucun logiciel inventorié dans Supabase.</td></tr>';
-  if(status&&status.textContent.startsWith("Saisis"))status.textContent="Données chargées depuis Supabase. La date d'installation est absente si le système ne la fournit pas.";
+  if(status&&status.textContent.startsWith("Saisis"))status.textContent=data.suggested_networks?.length
+   ?"CIDR suggéré depuis les interfaces des endpoints : "+data.suggested_networks.join(", ")+". Vérifie le périmètre avant de lancer le scan."
+   :"Données chargées depuis Supabase. Saisis un CIDR privé autorisé pour lancer la découverte réseau.";
  }catch(e){if(status)status.textContent="Surface d'attaque Supabase indisponible : "+e.message+". Vérifie la clé de service côté API et les droits de stockage.";}
 }
 async function loadCVE(){
