@@ -283,87 +283,231 @@ def sync_asset_to_supabase(asset_id, data):
 
 
 def sync_endpoint_telemetry(asset_id, data):
-    """Persist agent network/process observations and indicative alerts in Supabase."""
+    """Persist endpoint inventory, protection state, detections and network observations in Supabase."""
     if not supabase_public_configured():
-        return {"status":"not-configured","message":"SUPABASE_SERVICE_ROLE_KEY is not configured on the API server."}
-    stamp=now()
-    network=[]
-    for item in (data.get("network_connections") or [])[:500]:
-        if not isinstance(item,dict):
-            continue
-        protocol=str(item.get("protocol") or "other").lower()
-        if protocol not in {"tcp","udp","icmp","other"}:
-            protocol="other"
-        def clean_ip(value):
-            value=str(value or "").strip()
-            if not value:
-                return None
-            try:
-                return str(ipaddress.ip_address(value))
-            except ValueError:
-                return None
+        return {"status": "not-configured", "message": "SUPABASE_SERVICE_ROLE_KEY is required on the API server."}
+    stamp = now()
+
+    def clean_ip(value):
         try:
-            local_port=max(0,min(65535,int(item.get("local_port") or 0)))
-            remote_port=max(0,min(65535,int(item.get("remote_port") or 0)))
-            pid=max(0,int(item.get("pid") or 0))
-        except (TypeError,ValueError):
+            return str(ipaddress.ip_address(str(value or "").strip()))
+        except ValueError:
+            return None
+
+    def clean_timestamp(value):
+        value = str(value or "").strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).isoformat()
+        except ValueError:
+            return None
+
+    def send_batches(resource, rows, size=200):
+        for offset in range(0, len(rows), size):
+            supabase_public_request(resource, "POST", rows[offset:offset + size])
+
+    network = []
+    for item in (data.get("network_connections") or [])[:500]:
+        if not isinstance(item, dict):
+            continue
+        protocol = str(item.get("protocol") or "other").lower()
+        if protocol not in {"tcp", "udp", "icmp", "other"}:
+            protocol = "other"
+        try:
+            local_port = max(0, min(65535, int(item.get("local_port") or 0)))
+            remote_port = max(0, min(65535, int(item.get("remote_port") or 0)))
+            pid = max(0, int(item.get("pid") or 0))
+        except (TypeError, ValueError):
             continue
         network.append({
-            "asset_id":asset_id,"protocol":protocol,
-            "local_address":clean_ip(item.get("local_address")),
-            "local_port":local_port,"remote_address":clean_ip(item.get("remote_address")),
-            "remote_port":remote_port,"state":str(item.get("status") or "unknown")[:32],
-            "pid":pid,"process_name":str(item.get("process_name") or "")[:255],
-            "first_seen":stamp,"last_seen":stamp,"observations":1,
+            "asset_id": asset_id, "protocol": protocol,
+            "local_address": clean_ip(item.get("local_address")), "local_port": local_port,
+            "remote_address": clean_ip(item.get("remote_address")), "remote_port": remote_port,
+            "state": str(item.get("status") or "unknown")[:32], "pid": pid,
+            "process_name": str(item.get("process_name") or "")[:255],
+            "first_seen": stamp, "last_seen": stamp, "observations": 1,
         })
-    processes=[]
-    alerts=[]
-    suspicious=("mimikatz","lazagne","keylogger","njrat","darkcomet","remcos",
-                "asyncrat","nanocore","quasar","xworm","meterpreter","cobaltstrike")
+
+    processes = []
+    alerts = []
+    suspicious = ("mimikatz", "lazagne", "keylogger", "njrat", "darkcomet", "remcos",
+                  "asyncrat", "nanocore", "quasar", "xworm", "meterpreter", "cobaltstrike")
     for item in (data.get("processes") or [])[:500]:
-        if not isinstance(item,dict):
+        if not isinstance(item, dict):
             continue
         try:
-            pid=max(0,int(item.get("pid") or 0))
-        except (TypeError,ValueError):
+            pid = max(0, int(item.get("pid") or 0))
+        except (TypeError, ValueError):
             continue
-        name=str(item.get("name") or "unknown")[:255]
-        executable=str(item.get("executable") or "")[:1000]
-        started=str(item.get("started_at") or "").strip() or None
+        name = str(item.get("name") or "unknown")[:255]
+        executable = str(item.get("executable") or "")[:1000]
+        started = clean_timestamp(item.get("started_at"))
         processes.append({
-            "asset_id":asset_id,"pid":pid,"name":name,"executable":executable,
-            "started_at":started,"first_seen":stamp,"last_seen":stamp,
-            "signature_status":"unknown","reputation":"unknown",
+            "asset_id": asset_id, "pid": pid, "name": name, "executable": executable,
+            "started_at": started, "first_seen": stamp, "last_seen": stamp,
+            "signature_status": str(item.get("signature_status") or "unknown")[:32],
+            "reputation": str(item.get("reputation") or "unknown")[:32],
+            "sha256": str(item.get("sha256") or "")[:64] or None,
         })
-        matched=[term for term in suspicious if term in (name+" "+executable).lower()]
+        matched = [term for term in suspicious if term in (name + " " + executable).lower()]
         if matched:
-            dedupe="proc-review:"+asset_id+":"+name.lower()
+            dedupe = "proc-review:" + asset_id + ":" + name.lower()
             alerts.append({
-                "asset_id":asset_id,"rule_id":"PROC-REVIEW-001",
-                "dedupe_key":dedupe,"title":"Processus nécessitant une vérification",
-                "description":"Un nom ou chemin de processus correspond à un indicateur à examiner. Ce signal ne confirme pas un malware ; vérifier la signature, le hash, la réputation et le contexte.",
-                "severity":"medium","confidence":0.45,"status":"new","category":"endpoint",
-                "evidence":{"pid":pid,"name":name,"executable":executable,"matched_terms":matched},
-                "first_seen":stamp,"last_seen":stamp,"occurrence_count":1,
-                "created_at":stamp,"updated_at":stamp,
+                "asset_id": asset_id, "rule_id": "PROC-REVIEW-001", "dedupe_key": dedupe,
+                "title": "Processus nécessitant une vérification",
+                "description": "Un nom ou chemin correspond à un indicateur à examiner. Ce signal ne confirme pas un malware ; vérifier la signature, le hash, la réputation et le contexte.",
+                "severity": "medium", "confidence": 0.45, "status": "new", "category": "endpoint",
+                "evidence": {"pid": pid, "name": name, "executable": executable, "matched_terms": matched},
+                "first_seen": stamp, "last_seen": stamp, "occurrence_count": 1,
+                "created_at": stamp, "updated_at": stamp,
             })
+
+    software = []
+    for item in (data.get("software") or [])[:1500]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:255]
+        if not name:
+            continue
+        version = str(item.get("version") or "")[:100]
+        vendor = str(item.get("vendor") or "")[:255]
+        location = str(item.get("install_location") or "")[:1000]
+        fingerprint = hashlib.sha256("|".join((asset_id, name.lower(), version, vendor.lower(), location)).encode("utf-8")).hexdigest()
+        installed = str(item.get("installed_at") or "").strip()
+        if len(installed) == 10:
+            installed = installed + "T00:00:00+00:00"
+        software.append({
+            "asset_id": asset_id, "name": name, "version": version, "vendor": vendor,
+            "collected_at": stamp, "installed_at": clean_timestamp(installed),
+            "install_location": location, "install_scope": str(item.get("install_scope") or "")[:40],
+            "package_id": str(item.get("package_id") or "")[:255],
+            "software_fingerprint": fingerprint, "last_seen": stamp,
+        })
+
+    protection = data.get("endpoint_protection") or {}
+    protection_row = None
+    if isinstance(protection, dict):
+        provider = str(protection.get("provider") or "unknown")[:160]
+        protection_row = {
+            "asset_id": asset_id, "provider": provider,
+            "product_version": str(protection.get("product_version") or "")[:160],
+            "antivirus_enabled": protection.get("antivirus_enabled"),
+            "antispyware_enabled": protection.get("antispyware_enabled"),
+            "real_time_enabled": protection.get("real_time_enabled"),
+            "behavior_monitoring_enabled": protection.get("behavior_monitoring_enabled"),
+            "definitions_version": str(protection.get("definitions_version") or "")[:120],
+            "definitions_updated_at": clean_timestamp(protection.get("definitions_updated_at")),
+            "last_scan_at": clean_timestamp(protection.get("last_scan_at")),
+            "last_scan_type": str(protection.get("last_scan_type") or "")[:40],
+            "last_scan_status": str(protection.get("last_scan_status") or "unknown")[:40],
+            "health_status": str(protection.get("health_status") or "unknown")[:40],
+            "raw_details": {k: v for k, v in protection.items() if k not in {"detections"}},
+            "observed_at": stamp,
+        }
+
+    detections = []
+    for item in (protection.get("detections") if isinstance(protection, dict) else []) or []:
+        if not isinstance(item, dict):
+            continue
+        threat_name = str(item.get("ThreatName") or item.get("threat_name") or "Unclassified detection")[:255]
+        resources = item.get("Resources") or item.get("resources") or []
+        if not isinstance(resources, list):
+            resources = [str(resources)]
+        file_path = str(resources[0] if resources else item.get("file_path") or "")[:1000]
+        detected = clean_timestamp(item.get("InitialDetectionTime") or item.get("detected_at")) or stamp
+        threat_id = str(item.get("ThreatID") or item.get("threat_id") or "")
+        key_source = "|".join((asset_id, threat_id, threat_name, file_path, detected))
+        dedupe_key = hashlib.sha256(key_source.encode("utf-8")).hexdigest()
+        detections.append({
+            "asset_id": asset_id, "detection_source": str(protection.get("provider") or "endpoint-antivirus")[:160],
+            "threat_name": threat_name, "threat_type": "spyware" if any(x in threat_name.lower() for x in ("spy", "keylog", "steal")) else "malware",
+            "severity": "high", "confidence": 0.85, "file_path": file_path,
+            "sha256": None, "action_taken": "action_succeeded" if item.get("ActionSuccess") else "none",
+            "status": "open", "detected_at": detected,
+            "evidence": {"threat_id": threat_id, "resources": resources[:10], "raw": item},
+            "dedupe_key": dedupe_key,
+        })
+
+    listeners = []
+    service_names = {21:"FTP",22:"SSH",23:"Telnet",25:"SMTP",53:"DNS",80:"HTTP",110:"POP3",
+                     135:"MS-RPC",139:"NetBIOS",143:"IMAP",443:"HTTPS",445:"SMB",3389:"RDP",
+                     5432:"PostgreSQL",3306:"MySQL",5985:"WinRM-HTTP",5986:"WinRM-HTTPS",
+                     8080:"HTTP-Alt",8443:"HTTPS-Alt"}
+    for item in (data.get("listening_ports") or [])[:1000]:
+        if not isinstance(item, dict):
+            continue
+        address = clean_ip(item.get("ip_address"))
+        try:
+            port = int(item.get("port"))
+        except (TypeError, ValueError):
+            continue
+        protocol = str(item.get("protocol") or "tcp").lower()
+        if not address or not 1 <= port <= 65535 or protocol not in {"tcp", "udp"}:
+            continue
+        listeners.append({
+            "asset_id": asset_id, "ip_address": address, "protocol": protocol, "port": port,
+            "state": str(item.get("state") or "LISTEN")[:32],
+            "service_name": str(item.get("service_name") or service_names.get(port, "unknown"))[:120],
+            "product": str(item.get("product") or "")[:160], "version": str(item.get("version") or "")[:160],
+            "confidence": 0.8, "source": "endpoint-listener-enumeration",
+            "first_seen": stamp, "last_seen": stamp,
+        })
+
+    devices = []
+    for item in (data.get("network_discoveries") or [])[:256]:
+        if not isinstance(item, dict):
+            continue
+        address = clean_ip(item.get("ip_address"))
+        cidr = str(item.get("cidr") or "")
+        try:
+            network_obj = validate_network(cidr)
+            if not address or ipaddress.ip_address(address) not in network_obj:
+                continue
+        except ValueError:
+            continue
+        devices.append({
+            "ip_address": address, "network_cidr": str(network_obj),
+            "hostname": str(item.get("hostname") or "")[:255],
+            "mac_address": str(item.get("mac_address") or "")[:64],
+            "vendor": str(item.get("vendor") or "")[:160],
+            "device_type": str(item.get("device_type") or "unknown")[:80],
+            "os_guess": str(item.get("os_guess") or "")[:160],
+            "status": "active", "discovery_method": "agent-icmp",
+            "confidence": 0.65, "authorized_scope": True,
+            "first_seen": stamp, "last_seen": stamp, "last_scan_at": stamp,
+            "metadata": {"source_asset_id": asset_id},
+        })
+
     try:
         if network:
-            supabase_public_request(
-                "soc_network_connections?on_conflict=asset_id,protocol,local_address,local_port,remote_address,remote_port,state,pid",
-                "POST",network)
+            send_batches("soc_network_connections?on_conflict=asset_id,protocol,local_address,local_port,remote_address,remote_port,state,pid", network)
         if processes:
-            supabase_public_request(
-                "soc_process_observations?on_conflict=asset_id,pid,name,started_at",
-                "POST",processes)
+            send_batches("soc_process_observations?on_conflict=asset_id,pid,name,started_at", processes)
+        if software:
+            send_batches("software?on_conflict=asset_id,software_fingerprint", software)
+        if protection_row:
+            supabase_public_request("soc_endpoint_protection?on_conflict=asset_id,provider", "POST", protection_row)
+        if detections:
+            send_batches("soc_malware_detections?on_conflict=dedupe_key", detections)
+        if listeners:
+            send_batches("soc_listening_ports?on_conflict=ip_address,protocol,port", listeners)
+        if devices:
+            send_batches("soc_network_devices?on_conflict=network_cidr,ip_address", devices)
         if alerts:
-            supabase_public_request(
-                "soc_security_alerts?on_conflict=dedupe_key","POST",alerts)
-        return {"status":"ok","network_connections":len(network),
-                "processes":len(processes),"indicative_alerts":len(alerts)}
+            send_batches("soc_security_alerts?on_conflict=dedupe_key", alerts)
+        return {"status": "ok", "network_connections": len(network), "processes": len(processes),
+                "software": len(software), "listening_ports": len(listeners), "network_devices": len(devices),
+                "antivirus_status": bool(protection_row), "malware_detections": len(detections),
+                "indicative_alerts": len(alerts)}
     except Exception as exc:
-        return {"status":"error","stage":"telemetry","message":str(exc)[:500],
-                "network_connections_prepared":len(network),"processes_prepared":len(processes)}
+        return {"status": "error", "stage": "endpoint-telemetry", "message": str(exc)[:500],
+                "network_connections_prepared": len(network), "processes_prepared": len(processes),
+                "software_prepared": len(software), "ports_prepared": len(listeners)}
+
 
 @app.get("/")
 def index(): return FileResponse("app/static/index.html")
