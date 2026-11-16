@@ -56,6 +56,19 @@ def init():
           name TEXT, version TEXT, vendor TEXT, collected_at TEXT);
         CREATE TABLE IF NOT EXISTS log_findings(id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT,
           severity TEXT, rule_id TEXT, title TEXT, details TEXT, created_at TEXT);
+        CREATE TABLE IF NOT EXISTS network_connections(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT NOT NULL, protocol TEXT NOT NULL,
+          local_address TEXT, local_port INTEGER, remote_address TEXT, remote_port INTEGER,
+          status TEXT, pid INTEGER, process_name TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+          observations INTEGER NOT NULL DEFAULT 1,
+          UNIQUE(asset_id,protocol,local_address,local_port,remote_address,remote_port,status,pid));
+        CREATE INDEX IF NOT EXISTS idx_network_connections_last_seen ON network_connections(last_seen);
+        CREATE TABLE IF NOT EXISTS process_observations(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT NOT NULL, pid INTEGER NOT NULL,
+          name TEXT NOT NULL, executable TEXT DEFAULT '', started_at TEXT DEFAULT '',
+          first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+          UNIQUE(asset_id,pid,name,started_at));
+        CREATE INDEX IF NOT EXISTS idx_process_observations_last_seen ON process_observations(last_seen);
         CREATE TABLE IF NOT EXISTS incidents(
           id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT DEFAULT '',
           severity TEXT NOT NULL DEFAULT 'medium', status TEXT NOT NULL DEFAULT 'open',
@@ -303,7 +316,58 @@ async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorizat
     if due: background_tasks.add_task(run_internal_ai, aid)
     for entry in data.get("logs",[])[:250]:
         ingest_log(aid,entry)
+    ingest_endpoint_telemetry(aid, data)
     return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due}
+
+def ingest_endpoint_telemetry(asset_id, data):
+    """Persist endpoint connection/process metadata received over the authenticated agent channel."""
+    stamp=now()
+    suspicious=("mimikatz","lazagne","keylogger","njrat","darkcomet","remcos",
+                "asyncrat","nanocore","quasar","xworm","meterpreter","cobaltstrike")
+    with conn() as c:
+        for item in data.get("network_connections",[])[:500]:
+            if not isinstance(item,dict): continue
+            proto=str(item.get("protocol") or "unknown")[:8].lower()
+            local_ip=str(item.get("local_address") or "")[:64]
+            remote_ip=str(item.get("remote_address") or "")[:64]
+            try:
+                local_port=max(0,min(65535,int(item.get("local_port") or 0)))
+                remote_port=max(0,min(65535,int(item.get("remote_port") or 0)))
+                pid=max(0,int(item.get("pid") or 0))
+            except (TypeError,ValueError): continue
+            status=str(item.get("status") or "UNKNOWN")[:32]
+            pname=str(item.get("process_name") or "")[:255]
+            c.execute("""INSERT INTO network_connections(asset_id,protocol,local_address,local_port,
+              remote_address,remote_port,status,pid,process_name,first_seen,last_seen,observations)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,1)
+              ON CONFLICT(asset_id,protocol,local_address,local_port,remote_address,remote_port,status,pid)
+              DO UPDATE SET last_seen=excluded.last_seen,process_name=excluded.process_name,
+              observations=network_connections.observations+1""",
+              (asset_id,proto,local_ip,local_port,remote_ip,remote_port,status,pid,pname,stamp,stamp))
+        for item in data.get("processes",[])[:500]:
+            if not isinstance(item,dict): continue
+            try: pid=max(0,int(item.get("pid") or 0))
+            except (TypeError,ValueError): continue
+            name=str(item.get("name") or "unknown")[:255]
+            exe=str(item.get("executable") or "")[:1000]
+            started=str(item.get("started_at") or "")[:64]
+            c.execute("""INSERT OR IGNORE INTO process_observations
+              (asset_id,pid,name,executable,started_at,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)""",
+              (asset_id,pid,name,exe,started,stamp,stamp))
+            inserted=c.rowcount
+            if not inserted:
+                c.execute("""UPDATE process_observations SET last_seen=?,executable=?
+                  WHERE asset_id=? AND pid=? AND name=? AND started_at=?""",
+                  (stamp,exe,asset_id,pid,name,started))
+            elif any(term in (name+" "+exe).lower() for term in suspicious):
+                c.execute("""INSERT INTO log_findings(asset_id,severity,rule_id,title,details,created_at)
+                  VALUES(?,?,?,?,?,?)""",
+                  (asset_id,"medium","PROC-REVIEW-001","Processus nécessitant une vérification",
+                   "Un nom de processus correspond à un indicateur logiciel à examiner. Ce signal ne confirme pas un malware : vérifier le chemin, la signature, le hash et le contexte.",stamp))
+                c.execute("""INSERT INTO events(asset_id,severity,category,message,created_at,raw)
+                  VALUES(?,?,?,?,?,?)""",
+                  (asset_id,"warning","process-review",f"Processus à examiner : {name} (PID {pid})",stamp,
+                   json.dumps({"pid":pid,"name":name,"executable":exe})[:8000]))
 
 def ingest_log(asset_id, entry):
     message=str(entry.get("message",""))[:4000]
@@ -361,6 +425,24 @@ def events(authorization:str|None=Header(default=None)):
     require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 200").fetchall()
     return [dict(r) for r in rows]
+
+@app.get("/api/surveillance/telemetry")
+def surveillance_telemetry(authorization:str|None=Header(default=None)):
+    require_read(authorization)
+    with conn() as c:
+        connections=c.execute("""SELECT n.*,a.hostname FROM network_connections n
+          LEFT JOIN assets a ON a.id=n.asset_id ORDER BY n.last_seen DESC LIMIT 500""").fetchall()
+        processes=c.execute("""SELECT p.*,a.hostname FROM process_observations p
+          LEFT JOIN assets a ON a.id=p.asset_id ORDER BY p.last_seen DESC LIMIT 500""").fetchall()
+        totals=c.execute("""SELECT COUNT(*) AS total,COUNT(DISTINCT asset_id) AS assets,
+          SUM(CASE WHEN status='ESTABLISHED' THEN 1 ELSE 0 END) AS established
+          FROM network_connections WHERE last_seen>=?""",
+          ((datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat(),)).fetchone()
+    return {"connections":[dict(x) for x in connections],"processes":[dict(x) for x in processes],
+      "summary":{"connections_last_10m":int(totals["total"] or 0),
+      "machines_observed":int(totals["assets"] or 0),"established_last_10m":int(totals["established"] or 0)},
+      "collection":"endpoint connection metadata and process inventory",
+      "payload_capture":False,"timestamp":now()}
 @app.get("/api/vulnerabilities")
 def vulnerabilities(severity: str|None=None, vendor: str|None=None, product: str|None=None,
                     cwe: str|None=None, status: str|None=None, kev: bool|None=None,
