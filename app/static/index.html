@@ -44,7 +44,21 @@
 <div class="card"><div class="cardtitle">▦ Processus actifs observés</div><p class="notice">Inventaire limité aux processus remontés par les agents. Un nom inconnu ou signalé est un indice à vérifier, pas une preuve de malware.</p><div class="tablewrap"><table><thead><tr><th>Machine</th><th>Processus</th><th>PID</th><th>Exécutable</th><th>Vu pour la dernière fois</th></tr></thead><tbody id="processRows"><tr><td colspan="5" class="empty">Aucun processus collecté</td></tr></tbody></table></div></div>
 <div class="card"><div class="cardtitle">⚠️ Événements et alertes analysés</div><div id="allevents"><div class="empty">Chargement des événements…</div></div></div>
 </div>
-<div class="card wide" style="margin-top:14px"><div class="cardtitle">▣ Logiciels installés sur les endpoints <span class="tag">Inventaire agent</span></div><p class="notice">Les logiciels sont inventoriés depuis les mécanismes natifs du système. Les noms signalés par une règle indicative doivent être vérifiés : aucun logiciel n'est déclaré espion uniquement sur son nom.</p><div class="tablewrap"><table><thead><tr><th>Machine</th><th>Logiciel</th><th>Version</th><th>Éditeur</th><th>Collecté le</th><th>Évaluation initiale</th></tr></thead><tbody id="softwareRows"><tr><td colspan="6" class="empty">Aucun inventaire logiciel disponible.</td></tr></tbody></table></div></div><div class="card wide" style="margin-top:14px"><div class="cardtitle">ℹ️ Portée et limites de la collecte</div><p class="notice">La collecte actuelle observe les connexions réseau visibles depuis chaque endpoint et les processus locaux. Elle ne reconstitue pas le contenu des fichiers échangés, ne détecte pas à elle seule tous les spywares et ne voit pas les communications entre machines qui ne passent pas par un endpoint équipé. Pour auditer les accès SMB/partages, les authentifications AD et les transferts de fichiers, il faudra activer les audits Windows correspondants ou ajouter un collecteur réseau autorisé. Les données sont horodatées à la collecte et peuvent être limitées par les permissions du compte exécutant l'agent.</p></div>
+<div class="card wide" style="margin-top:14px"><div class="cardtitle">▣ Logiciels installés sur les endpoints <span class="tag">Inventaire agent</span></div><p class="notice">Les logiciels sont inventoriés depuis les mécanismes natifs du système. Les noms signalés par une règle indicative doivent être vérifiés : aucun logiciel n'est déclaré espion uniquement sur son nom.</p><div class="tablewrap"><table><thead><tr><th>Machine</th><th>Logiciel</th><th>Version</th><th>Éditeur</th><th>Installé le</th><th>Collecté le</th><th>Évaluation initiale</th></tr></thead><tbody id="softwareRows"><tr><td colspan="6" class="empty">Aucun inventaire logiciel disponible.</td></tr></tbody></table></div></div><div class="card wide" style="margin-top:14px">
+ <div class="cardtitle">⌕ Découverte réseau et surface d'attaque <span class="tag">Réseaux privés autorisés uniquement</span></div>
+ <div class="toolbar"><input class="field" id="attackCidr" placeholder="Ex. 192.168.1.0/24" style="min-width:220px"><button class="primary" id="attackScanButton" onclick="runAttackSurfaceScan()">Lancer la découverte IP + ports TCP</button></div>
+ <p class="notice" id="attackSurfaceStatus">Saisis un sous-réseau privé autorisé. Le scan est limité à 256 adresses et à une liste de ports TCP courants. Aucun exploit n'est lancé.</p>
+ <div class="kpi-strip" id="attackSurfaceStats"><div class="kpi"><b>—</b><span>Équipements découverts</span></div><div class="kpi"><b>—</b><span>Ports ouverts</span></div><div class="kpi"><b>—</b><span>CVE candidates</span></div><div class="kpi"><b>—</b><span>Détections antimalware</span></div></div>
+ <div class="cardtitle">Équipements identifiés par adresse IP</div>
+ <div class="tablewrap"><table><thead><tr><th>Adresse IP</th><th>Nom</th><th>Type</th><th>Système estimé</th><th>Ports ouverts</th><th>Dernière détection</th></tr></thead><tbody id="networkDeviceRows"><tr><td colspan="6" class="empty">Aucune découverte réseau enregistrée.</td></tr></tbody></table></div>
+</div>
+<div class="panelgrid" style="margin-top:14px">
+ <div class="card"><div class="cardtitle">Ports ouverts et services</div><div class="tablewrap"><table><thead><tr><th>IP</th><th>Port</th><th>Service</th><th>Produit / version</th><th>Source</th></tr></thead><tbody id="openPortRows"><tr><td colspan="5" class="empty">Aucun port inventorié.</td></tr></tbody></table></div></div>
+ <div class="card"><div class="cardtitle">Protection antivirus / antispyware</div><div class="tablewrap"><table><thead><tr><th>Machine</th><th>Antivirus</th><th>Temps réel</th><th>Antispyware</th><th>État</th><th>Dernière analyse</th></tr></thead><tbody id="protectionRows"><tr><td colspan="6" class="empty">Aucune télémétrie antivirus.</td></tr></tbody></table></div></div>
+ <div class="card"><div class="cardtitle">Détections de logiciels malveillants</div><div class="tablewrap"><table><thead><tr><th>Machine</th><th>Détection</th><th>Gravité</th><th>État</th><th>Fichier / ressource</th><th>Date</th></tr></thead><tbody id="malwareRows"><tr><td colspan="6" class="empty">Aucune détection remontée par l'antivirus.</td></tr></tbody></table></div></div>
+ <div class="card"><div class="cardtitle">CVE associées aux services réseau</div><div class="tablewrap"><table><thead><tr><th>CVE</th><th>IP / port</th><th>Produit / version</th><th>Gravité / CVSS</th><th>EPSS / KEV</th><th>Correspondance</th></tr></thead><tbody id="networkCveRows"><tr><td colspan="6" class="empty">Aucune CVE réseau associée.</td></tr></tbody></table></div></div>
+</div>
+<div class="card wide" style="margin-top:14px"><div class="cardtitle">ℹ️ Portée et limites de la collecte</div><p class="notice">La collecte actuelle observe les connexions réseau visibles depuis chaque endpoint et les processus locaux. Elle ne reconstitue pas le contenu des fichiers échangés, ne détecte pas à elle seule tous les spywares et ne voit pas les communications entre machines qui ne passent pas par un endpoint équipé. Pour auditer les accès SMB/partages, les authentifications AD et les transferts de fichiers, il faudra activer les audits Windows correspondants ou ajouter un collecteur réseau autorisé. Les données sont horodatées à la collecte et peuvent être limitées par les permissions du compte exécutant l'agent.</p></div>
 </section>
 <section id="vulns" class="page">
 <div class="heading"><div><div class="eyebrow">Vulnerability intelligence · NVD + OpenCVE</div><h1>Centre de vulnérabilités</h1><div class="sub">Catalogue enrichi, correspondance CPE, suivi des changements et triage des CVE détectées sur les actifs.</div></div><div class="toolbar"><button class="ghost" onclick="addCVESubscription()">＋ Surveiller un éditeur / produit</button><button class="primary" onclick="syncCVE()">↻ Synchroniser NVD + EPSS + KEV</button></div></div>
@@ -135,9 +149,52 @@ async function loadThreats(){
   document.getElementById("softwareRows").innerHTML=software.map(x=>{const flagged=suspiciousTerms.some(t=>(x.name+" "+x.vendor).toLowerCase().includes(t));return '<tr><td>'+esc(x.hostname||x.asset_id)+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.version||"—")+'</td><td>'+esc(x.vendor||"—")+'</td><td>'+esc(fmt(x.collected_at))+'</td><td><span class="badge '+(flagged?"off":"")+'">'+(flagged?"À examiner":"Aucun indicateur nominal")+'</span></td></tr>'}).join("")||'<tr><td colspan="6" class="empty">Aucun logiciel inventorié.</td></tr>';
   const ev=await api("/api/events");
   eventsBox.innerHTML=ev.map(e=>'<div class="event"><i class="dot"></i><div><strong>'+esc(e.message)+'</strong><small>'+esc(e.severity)+' · '+esc(e.category)+' · '+esc(fmt(e.created_at))+'</small></div></div>').join("")||'<div class="empty">Aucun événement enregistré.</div>';
+  await loadAttackSurface();
  }catch(e){
   if(eventsBox)eventsBox.innerHTML='<div class="empty">Impossible de charger la télémétrie : '+esc(e.message)+'</div>';
  }
+}
+async function runAttackSurfaceScan(){
+ const cidr=document.getElementById("attackCidr")?.value?.trim()||"";
+ if(!cidr){toast("Saisis un réseau privé au format CIDR.");return;}
+ if(!confirm("Confirmer le scan TCP du réseau autorisé "+cidr+" ?"))return;
+ const button=document.getElementById("attackScanButton"), status=document.getElementById("attackSurfaceStatus");
+ if(button){button.disabled=true;button.textContent="Scan en cours…";}
+ if(status)status.textContent="Découverte des hôtes et vérification des ports TCP courants…";
+ try{
+  const result=await api("/api/network/attack-surface-scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cidr})});
+  const s=result.summary||{};
+  if(status)status.textContent="Scan terminé : "+s.targets_checked+" adresses vérifiées, "+s.hosts_discovered+" équipements identifiés, "+s.open_ports+" ports ouverts et "+s.cve_candidates+" CVE candidates. Les correspondances restent à valider.";
+  toast("Scan réseau terminé"); await loadAttackSurface();
+ }catch(e){if(status)status.textContent="Échec du scan : "+e.message;toast(e.message);}
+ finally{if(button){button.disabled=false;button.textContent="Lancer la découverte IP + ports TCP";}}
+}
+async function loadAttackSurface(){
+ const status=document.getElementById("attackSurfaceStatus");
+ try{
+  const data=await api("/api/surveillance/attack-surface");
+  const devices=data.devices||[], ports=data.ports||[], protection=data.endpoint_protection||[];
+  const malware=data.malware_detections||[], software=data.software||[], vulns=data.vulnerabilities||[];
+  const deviceByIp=Object.fromEntries(devices.map(x=>[String(x.ip_address),x]));
+  const critical=vulns.filter(x=>x.severity==="critical").length;
+  document.getElementById("attackSurfaceStats").innerHTML=[
+   [devices.length,"Équipements découverts"],[ports.filter(x=>x.state==="open").length,"Ports ouverts"],
+   [vulns.length,"CVE candidates ("+critical+" critiques)"],[malware.filter(x=>!["resolved","removed","quarantined"].includes(x.status)).length,"Détections antimalware ouvertes"]
+  ].map(x=>'<div class="kpi"><b>'+esc(x[0])+'</b><span>'+esc(x[1])+'</span></div>').join("");
+  document.getElementById("networkDeviceRows").innerHTML=devices.map(x=>{
+   const count=ports.filter(p=>p.ip_address===x.ip_address&&p.state==="open").length;
+   return '<tr><td><b>'+esc(x.ip_address)+'</b></td><td>'+esc(x.hostname||"—")+'</td><td>'+esc(x.device_type||"unknown")+'</td><td>'+esc(x.os_guess||"Non déterminé")+'</td><td>'+count+'</td><td>'+esc(fmt(x.last_seen))+'</td></tr>';
+  }).join("")||'<tr><td colspan="6" class="empty">Aucune IP découverte. Lance un scan sur un CIDR autorisé.</td></tr>';
+  document.getElementById("openPortRows").innerHTML=ports.map(x=>{
+   const host=x.hostname||deviceByIp[x.ip_address]?.hostname||"";
+   return '<tr><td>'+esc(x.ip_address)+(host?'<br><small>'+esc(host)+'</small>':"")+'</td><td><b>'+esc(x.port)+'/'+esc(x.protocol)+'</b></td><td>'+esc(x.service_name||"unknown")+'</td><td>'+esc([x.product,x.version].filter(Boolean).join(" ")||"Version non révélée")+'</td><td>'+esc(x.source||"—")+'</td></tr>';
+  }).join("")||'<tr><td colspan="5" class="empty">Aucun port ouvert enregistré.</td></tr>';
+  document.getElementById("protectionRows").innerHTML=protection.map(x=>'<tr><td>'+esc(x.hostname||x.asset_id)+'</td><td>'+esc(x.provider)+'</td><td>'+esc(x.real_time_enabled===true?"Activée":x.real_time_enabled===false?"Désactivée":"Inconnue")+'</td><td>'+esc(x.antispyware_enabled===true?"Activé":x.antispyware_enabled===false?"Désactivé":"Inconnu")+'</td><td><span class="badge '+(x.health_status==="protected"?"ok":x.health_status==="at_risk"?"off":"")+'">'+esc(x.health_status||"unknown")+'</span></td><td>'+esc(fmt(x.last_scan_at))+'</td></tr>').join("")||'<tr><td colspan="6" class="empty">Aucun état antivirus remonté par les agents.</td></tr>';
+  document.getElementById("malwareRows").innerHTML=malware.map(x=>'<tr><td>'+esc(x.hostname||x.asset_id||"—")+'</td><td><b>'+esc(x.threat_name)+'</b></td><td class="sev-'+esc(x.severity)+'">'+esc(x.severity)+'</td><td>'+esc(x.status)+'</td><td title="'+esc(x.file_path)+'">'+esc(x.file_path||"—")+'</td><td>'+esc(fmt(x.detected_at))+'</td></tr>').join("")||'<tr><td colspan="6" class="empty">Aucune détection antivirus remontée.</td></tr>';
+  document.getElementById("networkCveRows").innerHTML=vulns.map(x=>'<tr><td><a target="_blank" rel="noopener" href="'+esc(x.cve_url||("https://nvd.nist.gov/vuln/detail/"+x.cve_id))+'">'+esc(x.cve_id)+'</a></td><td>'+esc(x.ip_address||"—")+'/'+esc(x.port||"—")+'</td><td>'+esc([x.software_name,x.software_version].filter(Boolean).join(" ")||x.service_name||"—")+'</td><td class="sev-'+esc(x.severity)+'">'+esc(x.severity)+' / '+esc(x.cvss_score??"—")+'</td><td>'+esc(x.epss_score==null?"—":(Number(x.epss_score)*100).toFixed(2)+"%")+' '+(x.known_exploited?'<span class="tag">CISA KEV</span>':"")+'</td><td>'+esc(x.match_confidence||"candidate")+'</td></tr>').join("")||'<tr><td colspan="6" class="empty">Aucune CVE de service réseau. Les versions non révélées ne peuvent pas être rapprochées avec fiabilité.</td></tr>';
+  document.getElementById("softwareRows").innerHTML=software.map(x=>'<tr><td>'+esc(x.hostname||x.asset_id)+'</td><td>'+esc(x.name)+'</td><td>'+esc(x.version||"—")+'</td><td>'+esc(x.vendor||"—")+'</td><td>'+esc(x.installed_at?fmt(x.installed_at):"Non fournie")+'</td><td>'+esc(fmt(x.collected_at))+'</td><td><span class="badge">Inventorié</span></td></tr>').join("")||'<tr><td colspan="7" class="empty">Aucun logiciel inventorié dans Supabase.</td></tr>';
+  if(status&&status.textContent.startsWith("Saisis"))status.textContent="Données chargées depuis Supabase. La date d'installation est absente si le système ne la fournit pas.";
+ }catch(e){if(status)status.textContent="Surface d'attaque Supabase indisponible : "+e.message+". Vérifie la clé de service côté API et les droits de stockage.";}
 }
 async function loadCVE(){
  try{
