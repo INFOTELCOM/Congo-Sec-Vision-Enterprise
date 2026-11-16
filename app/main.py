@@ -110,6 +110,8 @@ def init():
                           (hashlib.sha256(stored_token.encode("utf-8")).hexdigest(), stored_token))
         cols={r["name"] for r in c.execute("PRAGMA table_info(events)").fetchall()}
         if "raw" not in cols: c.execute("ALTER TABLE events ADD COLUMN raw TEXT")
+        if "event_fingerprint" not in cols: c.execute("ALTER TABLE events ADD COLUMN event_fingerprint TEXT")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_fingerprint ON events(event_fingerprint) WHERE event_fingerprint IS NOT NULL")
         vuln_cols={r["name"] for r in c.execute("PRAGMA table_info(vulnerabilities)").fetchall()}
         for col, ddl in {
             "software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''",
@@ -579,12 +581,14 @@ async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorizat
     last=ai_row["last_analysis_at"] if ai_row else None
     due=(not last) or (last < (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat())
     if due: background_tasks.add_task(run_internal_ai, aid)
-    for entry in data.get("logs",[])[:250]:
+    recent_logs = data.get("logs",[])[:250]
+    for entry in recent_logs:
         ingest_log(aid,entry)
+    event_sync = sync_event_logs_to_supabase(aid, recent_logs)
     ingest_endpoint_telemetry(aid, data)
     if supabase_sync.get("status")=="ok":
         supabase_sync=sync_endpoint_telemetry(aid, data)
-    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due,"supabase_sync":supabase_sync}
+    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(recent_logs),250),"ai_analysis_scheduled":due,"supabase_sync":supabase_sync,"event_sync":event_sync}
 
 def ingest_endpoint_telemetry(asset_id, data):
     """Persist endpoint connection/process metadata received over the authenticated agent channel."""
@@ -636,15 +640,74 @@ def ingest_endpoint_telemetry(asset_id, data):
                   (asset_id,"warning","process-review",f"Processus à examiner : {name} (PID {pid})",stamp,
                    json.dumps({"pid":pid,"name":name,"executable":exe})[:8000]))
 
+def event_log_fingerprint(asset_id, entry):
+    provider = str(entry.get("provider") or entry.get("source") or "endpoint")[:160].lower()
+    channel = str(entry.get("channel") or "")[:100].lower()
+    record_id = str(entry.get("record_id") or "").strip()
+    event_id = str(entry.get("event_id") or "").strip()
+    message = str(entry.get("message") or "")[:4000]
+    if record_id:
+        material = "|".join((asset_id, provider, channel, record_id))
+    else:
+        material = "|".join((asset_id, provider, channel, event_id, str(entry.get("timestamp") or ""), message))
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()
+
+
 def ingest_log(asset_id, entry):
-    message=str(entry.get("message",""))[:4000]
-    source=str(entry.get("source","endpoint"))[:100]
-    severity=str(entry.get("severity","info")).lower()
-    stamp=str(entry.get("timestamp") or now())
+    if not isinstance(entry, dict):
+        return False
+    message = str(entry.get("message", ""))[:4000]
+    source = str(entry.get("source", "endpoint"))[:160]
+    severity = str(entry.get("severity", "info")).lower()
+    stamp = str(entry.get("timestamp") or now())
+    try:
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        stamp = parsed.astimezone(timezone.utc).isoformat()
+    except ValueError:
+        stamp = now()
+    fingerprint = event_log_fingerprint(asset_id, entry)
+    raw = json.dumps(entry, ensure_ascii=False)
     with conn() as c:
-        c.execute("INSERT INTO events(asset_id,severity,category,message,created_at,raw) VALUES(?,?,?,?,?,?)",
-                  (asset_id,severity,"endpoint-log",message,stamp,json.dumps(entry)[:8000]))
-    detect_log_patterns(asset_id,message,source)
+        cur = c.execute(
+            "INSERT OR IGNORE INTO events(asset_id,severity,category,message,created_at,raw,event_fingerprint) VALUES(?,?,?,?,?,?,?)",
+            (asset_id, severity, "endpoint-log", message, stamp, raw[:8000], fingerprint)
+        )
+        inserted = cur.rowcount > 0
+    if inserted:
+        detect_log_patterns(asset_id, message, source)
+    return inserted
+
+
+def sync_event_logs_to_supabase(asset_id, entries):
+    if not supabase_public_configured():
+        return {"status": "not-configured", "saved": 0}
+    rows = []
+    for entry in (entries or [])[:250]:
+        if not isinstance(entry, dict):
+            continue
+        stamp = str(entry.get("timestamp") or now())
+        try:
+            parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            stamp = parsed.astimezone(timezone.utc).isoformat()
+        except ValueError:
+            stamp = now()
+        rows.append({
+            "asset_id": asset_id, "severity": str(entry.get("severity") or "info").lower()[:24],
+            "category": "endpoint-log", "message": str(entry.get("message") or "")[:4000],
+            "created_at": stamp, "raw": entry,
+            "event_fingerprint": event_log_fingerprint(asset_id, entry)
+        })
+    try:
+        for offset in range(0, len(rows), 100):
+            supabase_public_request("events?on_conflict=event_fingerprint", "POST", rows[offset:offset + 100])
+        return {"status": "ok", "saved": len(rows)}
+    except Exception as exc:
+        return {"status": "error", "saved": 0, "message": str(exc)[:300]}
+
 
 def detect_log_patterns(asset_id,message,source):
     m=message.lower(); findings=[]
