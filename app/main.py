@@ -957,6 +957,39 @@ def supabase_soc_request(resource, method, authorization, payload=None):
         raise HTTPException(502, "Réponse invalide de Supabase Data API") from None
 
 
+def persist_cve_intelligence(authorization, cve_id, **updates):
+    """Persist merged NVD/OpenCVE intelligence in Supabase under the caller's SOC role."""
+    normalized = str(cve_id or "").strip().upper()
+    if not re.fullmatch(r"CVE-[0-9]{4}-[0-9]{4,}", normalized):
+        raise HTTPException(400, "Identifiant CVE invalide.")
+    query_id = urllib.parse.quote(normalized, safe="")
+    existing = supabase_soc_request(
+        "cve_intelligence?select=cve_id,nvd_payload,opencve_payload,opencve_history,sources,nvd_fetched_at,opencve_fetched_at,history_fetched_at,created_at&cve_id=eq." + query_id,
+        "GET", authorization,
+    )
+    previous = existing[0] if isinstance(existing, list) and existing else {}
+    stamp = now()
+    payload = {
+        "cve_id": normalized,
+        "nvd_payload": previous.get("nvd_payload") or {},
+        "opencve_payload": previous.get("opencve_payload") or {},
+        "opencve_history": previous.get("opencve_history") or [],
+        "sources": previous.get("sources") or [],
+        "nvd_fetched_at": previous.get("nvd_fetched_at"),
+        "opencve_fetched_at": previous.get("opencve_fetched_at"),
+        "history_fetched_at": previous.get("history_fetched_at"),
+        "created_at": previous.get("created_at") or stamp,
+        "updated_at": stamp,
+    }
+    merged_sources = set(payload.get("sources") or [])
+    merged_sources.update(updates.get("sources") or [])
+    payload.update(updates)
+    payload["sources"] = sorted(merged_sources)
+    return supabase_soc_request(
+        "cve_intelligence?on_conflict=cve_id", "POST", authorization, payload
+    )
+
+
 @app.get("/api/nvd/status")
 def nvd_status(authorization: str | None = Header(default=None)):
     require_read(authorization)
@@ -1064,7 +1097,7 @@ def nvd_cpe_match_search(
 
 @app.get("/api/cve/intelligence/{cve_id}")
 def combined_cve_intelligence(cve_id: str, authorization: str | None = Header(default=None)):
-    """Combine NVD authority with optional OpenCVE context; failures remain source-specific."""
+    """Combine NVD and OpenCVE, then persist successful source payloads in Supabase."""
     require_read(authorization)
     try:
         nvd = get_nvd_cve(cve_id, api_key=NVD_API_KEY)
@@ -1077,15 +1110,29 @@ def combined_cve_intelligence(cve_id: str, authorization: str | None = Header(de
     except (urllib.error.URLError, TimeoutError):
         raise HTTPException(503, "NVD est momentanément inaccessible.") from None
     result = {"cve_id": cve_id.upper(), "nvd": nvd, "opencve": None, "opencve_history": None,
-              "opencve_status": "not-configured", "opencve_message": ""}
+              "opencve_status": "not-configured", "opencve_message": "", "persistence_status": "pending"}
+    updates = {"nvd_payload": nvd, "nvd_fetched_at": now(), "sources": ["NVD"]}
     if OPENCVE_API_TOKEN:
         try:
             result["opencve"] = get_opencve_cve(cve_id)
             result["opencve_history"] = get_opencve_changes(cve_id, page=1, page_size=10)
             result["opencve_status"] = "available"
+            updates.update({
+                "opencve_payload": result["opencve"],
+                "opencve_history": {"page": 1, "page_size": 10, "data": result["opencve_history"]},
+                "opencve_fetched_at": now(),
+                "history_fetched_at": now(),
+                "sources": ["NVD", "OpenCVE"],
+            })
         except OpenCVEError as exc:
             result["opencve_status"] = "unavailable"
             result["opencve_message"] = str(exc)
+    try:
+        persist_cve_intelligence(authorization, cve_id, **updates)
+        result["persistence_status"] = "saved"
+    except HTTPException as exc:
+        result["persistence_status"] = "failed"
+        result["persistence_message"] = exc.detail
     return result
 
 
@@ -1105,7 +1152,26 @@ def opencve_catalog(q: str = "", page: int = 1, page_size: int = 50,
                     authorization: str | None = Header(default=None)):
     require_read(authorization)
     try:
-        return search_opencve_cves(q, page, page_size)
+        payload = search_opencve_cves(q, page, page_size)
+        rows = payload.get("results", []) if isinstance(payload, dict) else []
+        saved = 0
+        for item in rows[:100]:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = str(item.get("id") or item.get("cve_id") or "").upper()
+            if not re.fullmatch(r"CVE-[0-9]{4}-[0-9]{4,}", candidate_id):
+                continue
+            try:
+                persist_cve_intelligence(
+                    authorization, candidate_id, opencve_payload=item,
+                    opencve_fetched_at=now(), sources=["OpenCVE"],
+                )
+                saved += 1
+            except HTTPException:
+                continue
+        if isinstance(payload, dict):
+            payload["supabase_saved"] = saved
+        return payload
     except OpenCVEError as exc:
         raise HTTPException(503, str(exc)) from None
 
@@ -1115,7 +1181,13 @@ def opencve_cve_changes(cve_id: str, page: int = 1, page_size: int = 20,
                         authorization: str | None = Header(default=None)):
     require_read(authorization)
     try:
-        return get_opencve_changes(cve_id, page, page_size)
+        payload = get_opencve_changes(cve_id, page, page_size)
+        persist_cve_intelligence(
+            authorization, cve_id,
+            opencve_history={"page": page, "page_size": page_size, "data": payload},
+            history_fetched_at=now(), sources=["OpenCVE"],
+        )
+        return payload
     except OpenCVEError as exc:
         raise HTTPException(503, str(exc)) from None
 
@@ -1124,7 +1196,12 @@ def opencve_cve_changes(cve_id: str, page: int = 1, page_size: int = 20,
 def opencve_cve_detail(cve_id: str, authorization: str | None = Header(default=None)):
     require_read(authorization)
     try:
-        return get_opencve_cve(cve_id)
+        payload = get_opencve_cve(cve_id)
+        persist_cve_intelligence(
+            authorization, cve_id, opencve_payload=payload,
+            opencve_fetched_at=now(), sources=["OpenCVE"],
+        )
+        return payload
     except OpenCVEError as exc:
         raise HTTPException(503, str(exc)) from None
 
