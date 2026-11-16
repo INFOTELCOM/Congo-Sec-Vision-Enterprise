@@ -863,7 +863,7 @@ def analyze_asset_ai(asset_id: str, authorization: str|None=Header(default=None)
     cve_advice=[{"cve_id":v["cve_id"],"severity":v["severity"],"title":v["title"],
        "software_name":v["software_name"],"software_version":v["software_version"],"vendor":v["vendor"],
        "match_confidence":v["match_confidence"],"cve_url":v["cve_url"],
-       **cve_remediation_advice(v["cve_id"],v["severity"],v.get("software_name",""),v.get("software_version",""),v["title"])} for v in vuln_rows]
+       **cve_remediation_advice(v["cve_id"],v["severity"],dict(v).get("software_name",""),dict(v).get("software_version",""),v["title"])} for v in vuln_rows]
     llm_result=None
     if LLM_BASE_URL and LLM_MODEL and (log_inputs or software_rows or vuln_rows):
         prompt=("Tu es un analyste SOC défensif. Analyse exclusivement les preuves fournies. N'invente pas de CVE, "
