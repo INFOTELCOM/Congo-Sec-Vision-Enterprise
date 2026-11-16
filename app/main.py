@@ -1121,8 +1121,27 @@ def surveillance_attack_surface(authorization: str | None = Header(default=None)
         malware = supabase_public_request("soc_malware_detections?select=*&order=detected_at.desc&limit=1000", "GET")
         software = supabase_public_request("software?select=*&is_present=eq.true&order=last_seen.desc&limit=3000", "GET")
         vulnerabilities = supabase_public_request("vulnerabilities?select=*&order=cvss_score.desc&limit=3000", "GET")
-        assets = supabase_public_request("assets?select=id,hostname,platform,ip_addresses,os_install_date,os_install_date_source,last_seen&limit=1000", "GET")
+        assets = supabase_public_request("assets?select=id,hostname,platform,ip_addresses,inventory,os_install_date,os_install_date_source,last_seen&limit=1000", "GET")
         asset_names = {x.get("id"): x.get("hostname") for x in assets}
+        suggested_networks = set()
+        for asset in assets:
+            inventory = asset.get("inventory") or {}
+            for interface in inventory.get("interfaces") or []:
+                address, mask = interface.get("address"), interface.get("netmask")
+                if not address or not mask:
+                    continue
+                try:
+                    network = ipaddress.ip_interface(str(address) + "/" + str(mask)).network
+                    if network.is_private and not network.is_loopback and not network.is_link_local and network.num_addresses <= 256:
+                        suggested_networks.add(str(network))
+                except ValueError:
+                    continue
+        with conn() as db:
+            for row in db.execute("SELECT DISTINCT cidr FROM network_discoveries ORDER BY last_seen DESC LIMIT 20").fetchall():
+                try:
+                    suggested_networks.add(str(validate_network(row["cidr"])))
+                except ValueError:
+                    continue
         for row in ports:
             row["hostname"] = asset_names.get(row.get("asset_id"), "")
         for collection in (protection, malware, software):
@@ -1132,6 +1151,7 @@ def surveillance_attack_surface(authorization: str | None = Header(default=None)
             "devices": devices, "ports": ports, "endpoint_protection": protection,
             "malware_detections": malware, "software": software,
             "vulnerabilities": vulnerabilities, "assets": assets,
+            "suggested_networks": sorted(suggested_networks),
             "storage": "supabase", "timestamp": now()
         }
     except Exception as exc:
