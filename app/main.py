@@ -981,8 +981,10 @@ def persist_cve_intelligence(authorization, cve_id, **updates):
         "created_at": previous.get("created_at") or stamp,
         "updated_at": stamp,
     }
+    merged_sources = set(payload.get("sources") or [])
+    merged_sources.update(updates.get("sources") or [])
     payload.update(updates)
-    payload["sources"] = sorted(set(payload.get("sources") or []))
+    payload["sources"] = sorted(merged_sources)
     return supabase_soc_request(
         "cve_intelligence?on_conflict=cve_id", "POST", authorization, payload
     )
