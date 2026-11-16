@@ -434,11 +434,14 @@ def surveillance_telemetry(authorization:str|None=Header(default=None)):
           LEFT JOIN assets a ON a.id=n.asset_id ORDER BY n.last_seen DESC LIMIT 500""").fetchall()
         processes=c.execute("""SELECT p.*,a.hostname FROM process_observations p
           LEFT JOIN assets a ON a.id=p.asset_id ORDER BY p.last_seen DESC LIMIT 500""").fetchall()
+        software=c.execute("""SELECT s.*,a.hostname FROM software s
+          LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.collected_at DESC,s.name LIMIT 1000""").fetchall()
         totals=c.execute("""SELECT COUNT(*) AS total,COUNT(DISTINCT asset_id) AS assets,
           SUM(CASE WHEN status='ESTABLISHED' THEN 1 ELSE 0 END) AS established
           FROM network_connections WHERE last_seen>=?""",
           ((datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat(),)).fetchone()
     return {"connections":[dict(x) for x in connections],"processes":[dict(x) for x in processes],
+      "software":[dict(x) for x in software],
       "summary":{"connections_last_10m":int(totals["total"] or 0),
       "machines_observed":int(totals["assets"] or 0),"established_last_10m":int(totals["established"] or 0)},
       "collection":"endpoint connection metadata and process inventory",
