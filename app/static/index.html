@@ -23,21 +23,21 @@
 .statusline{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
 @media(max-width:700px){.panelgrid{grid-template-columns:1fr}.kpi-strip{grid-template-columns:1fr 1fr}}
 </style></head><body>
-<div id="auth" class="auth"><div class="authbox"><div class="brand"><span class="logo">盾</span> CONGO SEC VISION</div><h2>Connexion administrateur</h2><p class="notice">Connecte-toi avec ton compte administrateur sécurisé.</p><form onsubmit="login(event)"><label for="email" class="notice">Adresse e-mail</label><input id="email" type="email" autocomplete="username" required><label for="password" class="notice">Mot de passe</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" style="width:100%" type="submit">Se connecter</button></form><p style="text-align:center;margin:16px 0 0"><a href="./applications.html" style="color:#63d9ed;text-decoration:none;font-weight:700">▣ Découvrir / télécharger nos applications</a></p><p id="autherr" class="notice red"></p></div></div>
+<div id="auth" class="auth"><div class="authbox"><div class="brand"><span class="logo">盾</span> CONGO SEC VISION</div><h2>Connexion administrateur</h2><p class="notice">Connecte-toi avec ton compte administrateur sécurisé.</p><form id="loginForm" onsubmit="login(event)"><label for="email" class="notice">Adresse e-mail</label><input id="email" type="email" autocomplete="username" required><label for="password" class="notice">Mot de passe</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" style="width:100%" type="submit">Se connecter</button></form><p style="text-align:center;margin:16px 0 0"><a href="./applications.html" style="color:#63d9ed;text-decoration:none;font-weight:700">▣ Découvrir / télécharger nos applications</a></p><p id="autherr" class="notice red"></p></div></div>
 <div class="shell"><aside class="side"><div class="brand"><span class="logo">盾</span><span>CONGO SEC<br><small style="color:#6d91b2;font-size:9px;letter-spacing:2px">VISION · SOC</small></span></div><nav class="nav"><button class="active" data-page="dashboard">◈ &nbsp;Vue générale</button><button data-page="assets">▦ &nbsp;Actifs & machines</button><button data-page="hypervisors">▤ &nbsp;Hyperviseurs</button><button data-page="threats">⬡ &nbsp;Menaces & événements</button><button data-page="vulns">⌁ &nbsp;Vulnérabilités CVE</button><button data-page="ai">✧ &nbsp;Analyse IA</button><button data-page="topology">⌘ &nbsp;Topologie réseau</button><button data-page="network">⌁ &nbsp;Découverte réseau</button><button data-page="reports">▤ &nbsp;Diagnostics</button><button data-page="incidents">◉ &nbsp;Incident Response</button><button data-page="automation">⚡ &nbsp;Automation & approvals</button><button data-page="team">♙ &nbsp;Équipe & rôles</button><button data-page="audit">⌑ &nbsp;Journal d'audit</button><button data-page="settings">⚙ &nbsp;Configuration</button><a href="./applications.html">▣ &nbsp;Applications & téléchargements</a></nav><div class="sidefoot">CONGO SEC VISION · LAB EDITION<br>Surveillance des actifs autorisés</div></aside>
 <main class="main"><header class="top"><div class="crumb">Security Operations / <b id="crumb">Vue générale</b></div><div class="right"><span class="pill"><span class="live">● API connectée</span></span><button class="ghost" onclick="refresh()">↻ Actualiser</button><button class="ghost" onclick="logout()">Déconnexion</button></div></header>
 <div class="content">
 <section id="dashboard" class="page active"><div class="heading"><div><div class="eyebrow">Centre des opérations de sécurité</div><h1>Vue générale</h1><div class="sub">Surveillance réelle des équipements enrôlés dans votre environnement.</div></div><button class="primary" onclick="diagnose()">⌁ Lancer un diagnostic</button></div>
-<div class="grid stats"><div class="card"><div class="statlabel">Machines inventoriées</div><div class="statnum" id="total">—</div><div class="hint">Équipements enrôlés</div></div><div class="card"><div class="statlabel">Systèmes en ligne</div><div class="statnum cyan" id="online">—</div><div class="hint">Dernier contact inférieur à 3 min</div></div><div class="card"><div class="statlabel">Vulnérabilités ouvertes</div><div class="statnum amber" id="vulns">—</div><div class="hint">Enregistrées dans la base</div></div><div class="card"><div class="statlabel">Vulnérabilités critiques</div><div class="statnum red" id="critical">—</div><div class="hint">Gravité critique déclarée</div></div></div>
+<div class="grid stats"><div class="card"><div class="statlabel">Machines inventoriées</div><div class="statnum" id="total">—</div><div class="hint">Équipements enrôlés</div></div><div class="card"><div class="statlabel">Systèmes en ligne</div><div class="statnum cyan" id="online">—</div><div class="hint">Dernier contact inférieur à 3 min</div></div><div class="card"><div class="statlabel">Vulnérabilités ouvertes</div><div class="statnum amber" id="vulnCount">—</div><div class="hint">Enregistrées dans la base</div></div><div class="card"><div class="statlabel">Vulnérabilités critiques</div><div class="statnum red" id="critical">—</div><div class="hint">Gravité critique déclarée</div></div></div>
 <div class="grid middle"><div class="card"><div class="cardtitle">◉ Santé des endpoints <span class="badge">Inventaire</span></div><div class="bars" id="healthbars"><div class="empty">En attente des agents</div></div></div><div class="card"><div class="cardtitle">⌘ Topologie des actifs <span class="badge">Machines enrôlées</span></div><div class="topology"><svg viewBox="0 0 500 230" aria-label="Schéma des machines réellement enrôlées"><path class="edge" d="M250 105 L110 55 M250 105 L390 55 M250 105 L110 175 M250 105 L390 175"/><circle class="node2" cx="250" cy="105" r="31"/><text x="250" y="110" fill="#e8f1fb" font-size="12" text-anchor="middle">SOC</text><g id="toponodes"><circle class="node" cx="110" cy="55" r="17"/><circle class="node" cx="390" cy="55" r="17"/><circle class="node" cx="110" cy="175" r="17"/><circle class="node" cx="390" cy="175" r="17"/></g><text x="110" y="86" fill="#91abc3" font-size="10" text-anchor="middle">Agent</text><text x="390" y="86" fill="#91abc3" font-size="10" text-anchor="middle">Agent</text><text x="110" y="205" fill="#91abc3" font-size="10" text-anchor="middle">Agent</text><text x="390" y="205" fill="#91abc3" font-size="10" text-anchor="middle">Agent</text></svg></div><p class="hint">Visualisation schématique des actifs enrôlés ; les liens réseau détaillés nécessitent une source de topologie dédiée.</p></div><div class="card"><div class="cardtitle">◷ Activité récente</div><div id="events"><div class="empty">Aucun événement collecté</div></div></div></div>
 <div class="card wide"><div class="cardtitle">▦ Machines connectées <button class="ghost" onclick="showPage('assets')">Voir tout →</button></div><div class="tablewrap"><table><thead><tr><th>Machine</th><th>Système</th><th>Adresse IP</th><th>CPU</th><th>Mémoire</th><th>État</th><th>Dernier contact</th></tr></thead><tbody id="assetrows"><tr><td colspan="7" class="empty">Aucune machine enrôlée pour le moment</td></tr></tbody></table></div></div></section>
 <section id="assets" class="page"><div class="heading"><div><div class="eyebrow">Inventaire des endpoints</div><h1>Actifs & machines</h1><div class="sub">Données remontées par les agents installés et autorisés.</div></div></div><div class="card"><div class="tablewrap"><table><thead><tr><th>Hostname</th><th>OS</th><th>IP locales</th><th>CPU</th><th>RAM</th><th>Disque</th><th>Agent</th><th>Statut</th></tr></thead><tbody id="allassets"></tbody></table></div></div></section>
-<section id="hypervisors" class="page"><div class="heading"><div><div class="eyebrow">Virtualisation · Infrastructure inventory</div><h1>Hyperviseurs & machines virtuelles</h1><div class="sub">Inventaire en lecture seule des environnements VMware, Proxmox, VirtualBox et Hyper-V.</div></div><button class="primary" onclick="syncHypervisors()">↻ Synchroniser les hyperviseurs</button></div>
-<div class="card"><div class="cardtitle">Connecteurs configurés</div><div id="hvProviders" class="kpi-strip"><div class="empty">Chargement des connecteurs…</div></div><p class="notice">Les identifiants restent dans les variables d'environnement du serveur. Aucun secret n'est stocké dans Supabase ou dans le navigateur. Les connecteurs n'exécutent aucune action sur les machines virtuelles.</p><div id="hvResult" class="hint">Synchronisation non lancée.</div></div>
-<div class="card" style="margin-top:14px"><div class="cardtitle">Inventaire centralisé · Supabase SOC</div><div id="hvInventory" class="empty">Chargement…</div></div></section>
+<section id="hypervisors" class="page"><div class="heading"><div><div class="eyebrow">Virtualisation · Infrastructure inventory</div><h1>Hyperviseurs & machines virtuelles</h1><div class="sub">Inventaire en lecture seule des environnements VMware, Proxmox, VirtualBox et Hyper-V.</div></div><div class="toolbar"><button class="ghost" onclick="checkHypervisorConnections()">Tester les connexions</button><button class="primary" onclick="syncHypervisors()">↻ Synchroniser les hyperviseurs réels</button></div></div>
+<div class="card"><div class="cardtitle">Connecteurs réels configurés</div><div id="hvProviders" class="kpi-strip"><div class="empty">Chargement des connecteurs…</div></div><div id="hvCheckResult" class="hint">État de connexion non vérifié.</div><p class="notice">Les identifiants restent dans les variables d'environnement du serveur. Aucun secret n'est stocké dans Supabase ou dans le navigateur. Les connecteurs n'exécutent aucune action sur les machines virtuelles.</p><div id="hvResult" class="hint">Synchronisation non lancée.</div></div>
+<div class="card" style="margin-top:14px"><div class="cardtitle">Inventaire centralisé · Supabase SOC (réel)</div><div id="hvInventory" class="empty">Chargement…</div></div><div class="card" style="margin-top:14px"><div class="cardtitle">Laboratoire de simulation <span class="tag">Données fictives · isolées</span></div><p class="notice">Machines fictives pour tester l’interface sans hyperviseur physique. Elles ne sont jamais enregistrées dans Supabase et ne représentent pas des connexions réelles. Activation serveur : <code>CSV_HYPERVISOR_LAB_MODE=true</code>.</p><div id="hvLabInventory" class="empty">Chargement du laboratoire…</div></div></section>
 <section id="threats" class="page"><div class="heading"><div><div class="eyebrow">Surveillance</div><h1>Menaces & événements</h1><div class="sub">Événements réellement enregistrés par la plateforme.</div></div></div><div class="card" id="allevents"></div></section>
 <section id="vulns" class="page">
-<div class="heading"><div><div class="eyebrow">Vulnerability intelligence · NVD + OpenCVE</div><h1>Centre de vulnérabilités</h1><div class="sub">Catalogue enrichi, correspondance CPE, suivi des changements et triage des CVE détectées sur les actifs.</div></div><div class="toolbar"><button class="ghost" onclick="addCVESubscription()">＋ Surveiller un éditeur / produit</button><button class="primary" onclick="syncCVE()">↻ Synchroniser NVD</button></div></div>
+<div class="heading"><div><div class="eyebrow">Vulnerability intelligence · NVD + OpenCVE</div><h1>Centre de vulnérabilités</h1><div class="sub">Catalogue enrichi, correspondance CPE, suivi des changements et triage des CVE détectées sur les actifs.</div></div><div class="toolbar"><button class="ghost" onclick="addCVESubscription()">＋ Surveiller un éditeur / produit</button><button class="primary" onclick="syncCVE()">↻ Synchroniser NVD + EPSS + KEV</button></div></div>
 <div class="card"><div class="toolbar" style="flex-wrap:wrap;gap:8px">
 <input class="field" id="cveSearch" placeholder="Rechercher CVE, logiciel, éditeur…" oninput="loadCVE()" style="min-width:220px">
 <input class="field" id="cveVendor" placeholder="Éditeur" oninput="loadCVE()" style="width:140px"><input class="field" id="cveProduct" placeholder="Produit" oninput="loadCVE()" style="width:140px"><input class="field" id="cveCwe" placeholder="CWE-79" oninput="loadCVE()" style="width:110px">
@@ -50,13 +50,39 @@
 <p class="notice">NVD fournit CVE/CPE/CVSS/CWE. EPSS estime la probabilité d’exploitation et CISA KEV signale les vulnérabilités exploitées connues. Une correspondance CPE reste à valider avec l’éditeur et le contexte réel de l’actif.</p>
 <div id="cveStats" class="kpi-strip"></div><div id="cveresult" class="empty">Chargement du catalogue…</div></div>
 <div class="card" style="margin-top:14px"><div class="cardtitle">Surveillance éditeurs & produits</div><div id="cveSubscriptions" class="empty">Aucun abonnement de surveillance.</div></div>
-<div class="card" style="margin-top:14px"><div class="cardtitle">Alertes CVE issues des surveillances</div><div id="cveNotifications" class="empty">Aucune alerte.</div></div></section>
-<section id="ai" class="page"><div class="heading"><div><div class="eyebrow">Analyse des journaux</div><h1>AI Log Analyst</h1><div class="sub">Règles locales actives ; modèle IA externe optionnel via configuration serveur.</div></div><button class="primary" onclick="analyzeAI()">Analyser les événements</button></div><div class="card"><div id="aires" class="empty">Aucune analyse demandée.</div></div><div class="card" style="margin-top:14px"><h3>Constats détectés</h3><div id="aifindings">Chargement…</div></div></section><section id="topology" class="page"><div class="heading"><div><div class="eyebrow">Network intelligence</div><h1>Topologie réseau</h1><div class="sub">Relations de sous-réseau calculées à partir des interfaces collectées par les agents.</div></div><button class="ghost" onclick="loadTopology()">Actualiser</button></div><div class="card"><div id="topologydata" class="empty">Chargement de la topologie…</div></div></section><section id="network" class="page"><div class="heading"><div><div class="eyebrow">Network discovery · LAN privé</div><h1>Découverte réseau</h1><div class="sub">Observations ICMP limitées aux réseaux privés autorisés, remontées par les agents ou lancées manuellement.</div></div><button class="ghost" onclick="loadNetwork()">↻ Actualiser</button></div><div class="card"><div class="toolbar"><input class="field" id="networkCidr" placeholder="Ex. 192.168.1.0/24" style="min-width:220px"><button class="primary" onclick="scanNetwork()">Scanner un réseau privé</button></div><p class="notice">La découverte manuelle est réservée aux rôles administrateur et analyste. Limite : 256 adresses par scan. Aucun agent n'est déployé automatiquement et aucun équipement découvert n'est enrôlé.</p><div id="networkResult" class="hint">Aucun scan manuel lancé.</div></div><div class="card" style="margin-top:14px"><div class="cardtitle">Hôtes observés</div><div id="networkRows" class="empty">Chargement…</div></div></section><section id="reports" class="page"><div class="heading"><div><div class="eyebrow">Contrôles techniques</div><h1>Diagnostics</h1><div class="sub">Contrôles basés sur les métriques d'inventaire remontées par les agents.</div></div><button class="primary" onclick="diagnose()">Lancer le contrôle</button></div><div class="card" id="diagresult">Aucun diagnostic lancé durant cette session.</div></section>
-<section id="settings" class="page"><div class="heading"><div><div class="eyebrow">Administration</div><h1>Configuration</h1></div></div><div class="card"><h3>Enrôlement des agents</h3><p class="notice">L'enrôlement nécessite le jeton AGENT_ENROLLMENT_TOKEN configuré côté serveur. Ne le publie jamais dans un dépôt ou dans une page web.</p><h3>État de l'API</h3><p id="apistatus" class="green">Connectée</p><h3>Mode</h3><p class="notice">Édition laboratoire · base SQLite persistante · authentification individuelle Supabase Auth.</p></div></section>
+<div class="card" style="margin-top:14px"><div class="cardtitle">Alertes CVE issues des surveillances</div><div id="cveNotifications" class="empty">Aucune alerte.</div></div>
+<div class="card" style="margin-top:14px">
+ <div class="cardtitle">Explorateur NVD · API v2 <span id="nvdStatus" class="tag">Contrôle non lancé</span></div>
+ <p class="notice">Recherche directe dans le catalogue officiel NVD : CVE, historique, dictionnaire CPE et critères de correspondance. La clé NVD est facultative ; sans clé, la plateforme applique un rythme prudent.</p>
+ <div class="toolbar">
+  <input class="field" id="nvdQuery" placeholder="CVE-2026-12345, Microsoft Windows, Apache…" style="min-width:260px;flex:1" onkeydown="if(event.key==='Enter')searchNVD()">
+  <button class="primary" onclick="searchNVD()">Rechercher dans NVD</button>
+ </div>
+ <div class="toolbar">
+  <input class="field" id="nvdCpeQuery" placeholder="Dictionnaire CPE : Microsoft Windows" style="min-width:230px;flex:1" onkeydown="if(event.key==='Enter')searchNVDCPE()">
+  <button class="ghost" onclick="searchNVDCPE()">Rechercher CPE</button>
+  <input class="field" id="nvdMatchQuery" placeholder="Identifiant CVE : CVE-2026-12345" style="min-width:280px;flex:1" onkeydown="if(event.key==='Enter')searchNVDCPEMatches()">
+  <button class="ghost" onclick="searchNVDCPEMatches()">Critères CPE d’une CVE</button>
+ </div>
+ <div id="nvdResults" class="empty">Saisis un identifiant CVE, un éditeur ou un produit pour interroger directement NVD.</div>
+</div>
+
+<div class="card" style="margin-top:14px">
+ <div class="cardtitle">Catalogue OpenCVE API v2 <span id="opencveStatus" class="tag">Vérification non lancée</span></div>
+ <div class="toolbar">
+  <input class="field" id="opencveQuery" placeholder="vendor:microsoft AND cvss31>=9" style="min-width:300px;flex:1" onkeydown="if(event.key==='Enter')searchOpenCVE()">
+  <button class="primary" onclick="searchOpenCVE()">Rechercher OpenCVE</button>
+  <button class="ghost" onclick="loadOpenCVEStatus()">Tester la connexion</button>
+ </div>
+ <p class="notice">Recherche avancée dans le catalogue OpenCVE (API v2), consultation des détails, métriques CVSS/EPSS/KEV et historique des changements. Le jeton API reste côté serveur dans OPENCVE_API_TOKEN. Aucun secret n'est envoyé au navigateur.</p>
+ <div id="opencveResults" class="empty">Teste la connexion OpenCVE ou lance une recherche avancée.</div>
+</div></section>
+<section id="ai" class="page"><div class="heading"><div><div class="eyebrow">Analyse des journaux</div><h1>AI Log Analyst</h1><div class="sub">Règles locales actives ; modèle IA externe optionnel via configuration serveur.</div></div><button class="primary" onclick="analyzeAI()">Analyser les événements</button></div><div class="card"><div id="aires" class="empty">Aucune analyse demandée.</div></div><div class="card" style="margin-top:14px"><h3>Constats détectés</h3><div id="aifindings">Chargement…</div></div></section><section id="topology" class="page"><div class="heading"><div><div class="eyebrow">Network intelligence</div><h1>Topologie réseau</h1><div class="sub">Relations de sous-réseau calculées à partir des interfaces collectées par les agents.</div></div><button class="ghost" onclick="loadTopology()">Actualiser</button></div><div class="card"><div id="topologydata" class="empty">Chargement de la topologie…</div></div></section><section id="network" class="page"><div class="heading"><div><div class="eyebrow">Network discovery · LAN privé</div><h1>Découverte réseau</h1><div class="sub">Observations ICMP limitées aux réseaux privés autorisés, remontées par les agents ou lancées manuellement.</div></div><button class="ghost" onclick="loadNetwork()">↻ Actualiser</button></div><div class="card"><div class="toolbar"><input class="field" id="networkCidr" placeholder="Ex. 192.168.1.0/24" style="min-width:220px"><button class="primary" onclick="scanNetwork()">Scanner un réseau privé</button></div><p class="notice">La découverte manuelle est réservée aux rôles administrateur et analyste. Limite : 256 adresses par scan. Aucun agent n'est déployé automatiquement et aucun équipement découvert n'est enrôlé.</p><div id="networkResult" class="hint">Aucun scan manuel lancé.</div></div><div class="card" style="margin-top:14px"><div class="cardtitle">Hôtes observés</div><div id="networkRows" class="empty">Chargement…</div></div></section><section id="reports" class="page"><div class="heading"><div><div class="eyebrow">Contrôles techniques</div><h1>Diagnostics</h1><div class="sub">Contrôles basés sur les métriques d'inventaire remontées par les agents.</div></div><button class="ghost" onclick="exportAssetsCSV()">Exporter les actifs CSV</button><button class="primary" onclick="diagnose()">Lancer le contrôle</button></div><div class="card" id="diagresult">Aucun diagnostic lancé durant cette session.</div></section>
+<section id="settings" class="page"><div class="heading"><div><div class="eyebrow">Administration</div><h1>Configuration</h1></div><button class="ghost" onclick="loadConfigStatus()">Actualiser</button></div><div class="card"><h3>Enrôlement des agents</h3><p class="notice">L'enrôlement nécessite le jeton AGENT_ENROLLMENT_TOKEN configuré côté serveur. Ne le publie jamais dans un dépôt ou dans une page web.</p><h3>État de l'API</h3><p id="apistatus" class="green">Connectée</p><h3>Configuration des intégrations</h3><pre id="configdetails" class="notice" style="white-space:pre-wrap">Chargement…</pre><h3>Mode</h3><p class="notice">Édition laboratoire · base SQLite persistante · authentification individuelle Supabase Auth.</p></div></section>
 
 <section id="incidents" class="page"><div class="heading"><div><div class="eyebrow">SOC · Incident response</div><h1>Gestion des incidents</h1><div class="sub">Cycle de vie, priorisation, assignation et suivi des investigations.</div></div><div class="toolbar"><button class="ghost" onclick="correlateIncidents()">↗ Convertir les constats en incidents</button><button class="primary" onclick="newIncident()">＋ Nouvel incident</button></div></div><div class="kpi-strip"><div class="kpi"><b id="incOpen">—</b><span>Ouverts</span></div><div class="kpi"><b id="incCritical">—</b><span>Critiques / élevés</span></div><div class="kpi"><b id="incResolved">—</b><span>Résolus / clos</span></div></div><div class="card"><div id="incidentlist" class="empty">Chargement des incidents…</div></div></section>
 <section id="automation" class="page"><div class="heading"><div><div class="eyebrow">Orchestration & gouvernance</div><h1>Automation Center</h1><div class="sub">Workflows préparés, demandes de changement et validations. Aucune commande distante n'est exécutée.</div></div><button class="primary" onclick="newWorkflow()">＋ Créer un workflow</button></div><div class="panelgrid"><div class="card"><div class="cardtitle">Workflows configurés <span class="tag">Désactivés par défaut</span></div><div id="workflowlist" class="empty">Chargement…</div></div><div class="card"><div class="cardtitle">Demandes d'approbation <button class="action" onclick="newApproval()">＋ Demander</button></div><div id="approvallist" class="empty">Chargement…</div></div></div><p class="notice">Les validations enregistrent une décision de gouvernance uniquement. Elles ne déclenchent pas de remédiation sur les endpoints.</p></section>
-<section id="team" class="page"><div class="heading"><div><div class="eyebrow">Administration & gouvernance</div><h1>Équipe & rôles</h1><div class="sub">Registre des membres et rôles prévus pour le contrôle d'accès.</div></div><button class="primary" onclick="newMember()">＋ Ajouter un membre</button></div><div class="card"><div id="teamlist" class="empty">Chargement…</div><p class="notice">Les routes API privilégiées exigent un rôle administrateur dans Supabase app_metadata. Les rôles analyste, lecteur et répondant ne disposent pas encore de permissions différenciées. MFA et gestion avancée des sessions restent à configurer.</p></div></section>
+<section id="team" class="page"><div class="heading"><div><div class="eyebrow">Administration & gouvernance</div><h1>Équipe & rôles</h1><div class="sub">Registre des membres et rôles prévus pour le contrôle d'accès.</div></div><button class="primary" onclick="newMember()">＋ Ajouter un membre</button></div><div class="card"><div id="teamlist" class="empty">Chargement…</div><p class="notice">Ce tableau est un registre local de l’équipe ; ajouter une ligne ne crée pas de compte Supabase Auth et ne modifie pas app_metadata. Les droits réels restent pilotés par les rôles app_metadata validés côté serveur.</p></div></section>
 <section id="audit" class="page"><div class="heading"><div><div class="eyebrow">Traçabilité</div><h1>Journal d'audit</h1><div class="sub">Historique des actions administratives enregistrées par l'API.</div></div><button class="ghost" onclick="loadAudit()">↻ Actualiser</button></div><div class="card"><div id="auditlist" class="empty">Chargement…</div></div><div class="card" style="margin-top:14px"><div class="cardtitle">État des contrôles de sécurité</div><pre id="secstatus" class="notice">Chargement…</pre></div></section>
 <div class="footer">CONGO SEC VISION · PROTÉGER · DÉTECTER · ANALYSER · RÉPONDRE</div></div></main></div><div id="toast" class="toast"></div>
 <script src="./config.js"></script>
@@ -74,7 +100,7 @@ function toast(s){let t=document.getElementById("toast");t.textContent=s;t.style
 function fmt(s){if(!s)return"—";return new Date(s).toLocaleString("fr-FR")}
 function row(a){return `<tr><td><b>${esc(a.hostname)}</b></td><td>${esc(a.platform||"—")}${a.virtualization?.is_virtual_machine?`<small style="display:block;color:#58c8dc;margin-top:3px">VM · ${esc(a.virtualization?.provider||"Hyperviseur détecté")}</small>`:`<small style="display:block;color:#91abc3;margin-top:3px">Machine physique / non détectée</small>`}</td><td>${(a.ip_addresses||[]).map(x=>esc(x.address)).join(", ")||"—"}</td><td>${a.cpu_percent??"—"}%</td><td>${a.memory_percent??"—"}%</td><td>${a.disk_percent??"—"}%</td><td>${esc(a.agent_version||"—")}</td><td><span class="badge ${a.online?"ok":"off"}">${a.online?"En ligne":"Hors ligne"}</span></td></tr>`}
 function esc(x){return String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-async function refresh(){try{await api("/api/auth/check",{method:"POST"});overview=await api("/api/overview");document.getElementById("total").textContent=overview.assets_total;document.getElementById("online").textContent=overview.assets_online;document.getElementById("vulns").textContent=overview.open_vulnerabilities;document.getElementById("critical").textContent=overview.critical_vulnerabilities;
+async function refresh(){try{await api("/api/auth/check",{method:"POST"});overview=await api("/api/overview");document.getElementById("total").textContent=overview.assets_total;document.getElementById("online").textContent=overview.assets_online;document.getElementById("vulnCount").textContent=overview.open_vulnerabilities;document.getElementById("critical").textContent=overview.critical_vulnerabilities;
 let rows=overview.assets.map(row).join("")||'<tr><td colspan="7" class="empty">Aucune machine enrôlée. Installe un agent de laboratoire pour commencer.</td></tr>';document.getElementById("assetrows").innerHTML=rows;document.getElementById("allassets").innerHTML=overview.assets.map(row).join("")||'<tr><td colspan="8" class="empty">Aucun actif enregistré</td></tr>';
 document.getElementById("events").innerHTML=overview.recent_events.map(e=>`<div class="event"><i class="dot"></i><div><strong>${esc(e.message)}</strong><small>${esc(e.category)} · ${fmt(e.created_at)}</small></div></div>`).join("")||'<div class="empty">Aucun événement collecté</div>';
 document.getElementById("healthbars").innerHTML=[["CPU moyen",avg("cpu_percent")],["Mémoire moyenne",avg("memory_percent")],["Disque moyen",avg("disk_percent")]].map(x=>`<div class="barrow"><span>${x[0]}</span><div class="track"><div class="fill" style="width:${x[1]}%"></div></div><b>${x[1]}%</b></div>`).join("");
@@ -105,6 +131,141 @@ async function loadCVE(){
 
  }catch(e){const el=document.getElementById("cveresult");if(el)el.textContent="Erreur CVE : "+e.message}
 }
+async function loadConfigStatus(){
+ const out=document.getElementById("configdetails");
+ if(!out)return;
+ out.textContent="Chargement des états d’intégration…";
+ try{
+  const c=await api("/api/config");
+  out.textContent=[
+   "Produit : "+c.product+" · Version : "+c.version,
+   "Mode : "+c.mode,
+   "Sources CVE : "+c.cve_provider,
+   "Synchronisation automatique : "+(c.cve_automatic_sync?"activée":"désactivée"),
+   "Clé API NVD : "+(c.nvd_api_key_configured?"configurée":"facultative · non renseignée"),
+   "Jeton OpenCVE : "+(c.opencve_configured?"configuré":"non configuré"),
+   "Intervalle de synchronisation : "+c.cve_sync_interval_minutes+" minutes",
+   "Moteur IA : "+(c.llm_configured?"LLM · "+(c.llm_model||"modèle configuré"):"règles locales")
+  ].join("\n");
+ }catch(e){out.textContent="Configuration inaccessible : "+e.message;}
+}
+async function loadNVDStatus(){
+ const badge=document.getElementById("nvdStatus");
+ try{const x=await api("/api/nvd/status");if(badge)badge.textContent="NVD API 2.0 · "+(x.api_key_configured?"clé configurée":"mode prudent sans clé");}
+ catch(e){if(badge)badge.textContent="NVD indisponible : "+e.message;}
+}
+let nvdPage=1;
+async function searchNVD(page=1){
+ const out=document.getElementById("nvdResults"),q=document.getElementById("nvdQuery").value.trim();
+ if(!q){out.textContent="Saisis un identifiant CVE, un éditeur ou un produit.";return;}
+ if(/^CVE-[0-9]{4}-[0-9]{4,}$/i.test(q)){await viewNVDCVE(q);return;}
+ nvdPage=Math.max(1,Number(page)||1);out.textContent="Interrogation de NVD API 2.0…";
+ try{
+  const d=await api("/api/nvd/cves?q="+encodeURIComponent(q)+"&page="+nvdPage+"&page_size=50"),rows=d.vulnerabilities||[];
+  const total=Number(d.totalResults||0),pageSize=Number(d.resultsPerPage||50);
+  out.innerHTML='<p class="notice">'+total.toLocaleString("fr-FR")+' CVE correspondante(s) · page '+nvdPage+' · NVD API 2.0</p>'+
+   (rows.length?'<div class="tablewrap"><table><thead><tr><th>CVE</th><th>Publication</th><th>Dernière modification</th><th>Statut</th><th>Détail</th></tr></thead><tbody>'+
+   rows.map(function(x){const c=x.cve||{},id=String(c.id||""),desc=(c.descriptions||[]).find(y=>y.lang==="en")?.value||"";return '<tr><td><b>'+esc(id)+'</b><small style="display:block">'+esc(desc.slice(0,220))+'</small></td><td>'+fmt(c.published)+'</td><td>'+fmt(c.lastModified)+'</td><td>'+esc(c.vulnStatus||"—")+'</td><td><button class="action" onclick="viewNVDCVE(\''+esc(id)+'\')">Détails + historique</button></td></tr>'}).join("")+
+   '</tbody></table></div>':'<div class="empty">Aucune CVE trouvée dans NVD.</div>')+
+   '<div class="toolbar" style="margin-top:10px"><button class="ghost" '+(nvdPage<=1?'disabled':'')+' onclick="searchNVD('+(nvdPage-1)+')">Page précédente</button><button class="ghost" '+(nvdPage*pageSize>=total?'disabled':'')+' onclick="searchNVD('+(nvdPage+1)+')">Page suivante</button></div>';
+ }catch(e){out.textContent="Recherche NVD impossible : "+e.message;}
+}
+async function viewNVDCVE(id){
+ const out=document.getElementById("nvdResults");out.textContent="Chargement du détail CVE et des historiques…";
+ try{
+  const r=await api("/api/cve/intelligence/"+encodeURIComponent(id));
+  const h=await api("/api/nvd/cves/"+encodeURIComponent(id)+"/history?page=1&page_size=10");
+  const c=r.nvd||{},m=c.metrics||{},metric=(m.cvssMetricV40||m.cvssMetricV31||m.cvssMetricV30||m.cvssMetricV2||[])[0]||{},cv=metric.cvssData||{};
+  const desc=(c.descriptions||[]).find(x=>x.lang==="en")?.value||(c.descriptions||[])[0]?.value||"";
+  const changes=h.cveChanges||h.changes||[],refs=(c.references||[]).slice(0,10);
+  out.innerHTML='<div class="event"><i class="dot"></i><div><strong>'+esc(c.id||id)+' · '+esc(c.vulnStatus||"Statut inconnu")+'</strong><small>Publiée : '+fmt(c.published)+' · Modifiée : '+fmt(c.lastModified)+'</small><p class="notice">'+esc(desc)+'</p><p class="notice">CVSS '+esc(cv.baseSeverity||"—")+' · '+(cv.baseScore==null?"Score indisponible":Number(cv.baseScore).toFixed(1)+"/10")+' · '+esc(cv.vectorString||"")+'</p><p class="notice">CWE : '+esc((c.weaknesses||[]).flatMap(x=>(x.description||[]).map(y=>y.value)).join(", ")||"—")+'</p></div></div>'+
+   '<div class="cardtitle">Configurations / produits affectés</div><pre class="notice" style="white-space:pre-wrap;overflow-wrap:anywhere">'+esc(JSON.stringify({affected:c.affected||[],configurations:c.configurations||[]},null,2).slice(0,7000))+'</pre>'+
+   '<div class="cardtitle">Références</div>'+(refs.length?refs.map(x=>'<div class="event"><i class="dot"></i><div><a href="'+esc(x.url)+'" target="_blank" rel="noopener">'+esc(x.url)+'</a><small>'+esc((x.tags||[]).join(", "))+'</small></div></div>').join(""):'<div class="empty">Aucune référence publiée.</div>')+
+   '<div class="cardtitle">Historique NVD ('+Number(h.totalResults||changes.length)+')</div>'+(changes.length?changes.map(x=>'<div class="event"><i class="dot"></i><div><strong>'+esc(x.eventName||"Modification")+'</strong><small>'+fmt(x.created)+' · '+esc(JSON.stringify(x.details||x).slice(0,500))+'</small></div></div>').join(""):'<div class="empty">Aucun changement retourné.</div>')+
+   '<div class="cardtitle">OpenCVE</div>'+(r.opencve?'<pre class="notice" style="white-space:pre-wrap;overflow-wrap:anywhere">'+esc(JSON.stringify({cve_id:r.opencve.cve_id,title:r.opencve.title,description:r.opencve.description,metrics:r.opencve.metrics,weaknesses:r.opencve.weaknesses,vendors:r.opencve.vendors,history:r.opencve_history?.results||[]},null,2).slice(0,5000))+'</pre>':'<div class="empty">OpenCVE indisponible : '+esc(r.opencve_message||"jeton API non configuré")+'. Le détail NVD reste disponible.</div>');
+ }catch(e){out.textContent="Détail CVE indisponible : "+e.message;}
+}
+async function searchNVDCPE(){
+ const out=document.getElementById("nvdResults"),q=document.getElementById("nvdCpeQuery").value.trim();
+ if(!q){out.textContent="Saisis un éditeur ou un produit.";return;}
+ out.textContent="Recherche dans le dictionnaire CPE…";
+ try{
+  const d=await api("/api/nvd/cpes?q="+encodeURIComponent(q)+"&page=1&page_size=50"),rows=d.products||[];
+  out.innerHTML='<p class="notice">'+Number(d.totalResults||rows.length)+' entrée(s) · dictionnaire NVD CPE</p>'+
+   (rows.length?'<div class="tablewrap"><table><thead><tr><th>CPE 2.3</th><th>Titres éditeur / produit</th><th>Identifiant</th></tr></thead><tbody>'+
+   rows.map(x=>{const c=x.cpe||{};return '<tr><td><code>'+esc(c.cpeName||"—")+'</code></td><td>'+esc((c.titles||[]).map(y=>y.title).join("; ")||"—")+'</td><td>'+esc(c.cpeNameId||"—")+'</td></tr>'}).join("")+
+   '</tbody></table></div>':'<div class="empty">Aucun CPE trouvé.</div>');
+ }catch(e){out.textContent="Recherche CPE impossible : "+e.message;}
+}
+async function searchNVDCPEMatches(){
+ const out=document.getElementById("nvdResults"),q=document.getElementById("nvdMatchQuery").value.trim();
+ if(!q){out.textContent="Saisis un identifiant CVE valide pour retrouver ses critères CPE, par exemple CVE-2026-12345.";return;}
+ out.textContent="Recherche des critères CPE…";
+ try{
+  const d=await api("/api/nvd/cpe-matches?q="+encodeURIComponent(q)+"&page=1&page_size=50"),rows=d.matchStrings||[];
+  out.innerHTML='<p class="notice">'+Number(d.totalResults||rows.length)+' critère(s) · NVD CPE Match</p>'+
+   (rows.length?'<div class="tablewrap"><table><thead><tr><th>Critère</th><th>Plage de versions</th><th>Statut</th><th>Correspondances</th></tr></thead><tbody>'+
+   rows.map(x=>{const m=x.matchString||{};return '<tr><td><code>'+esc(m.criteria||"—")+'</code></td><td>'+esc([m.versionStartIncluding,m.versionStartExcluding,m.versionEndIncluding,m.versionEndExcluding].filter(Boolean).join(" · ")||"Non précisée")+'</td><td>'+esc(m.status||"—")+'</td><td>'+Number((m.matches||[]).length)+'</td></tr>'}).join("")+
+   '</tbody></table></div>':'<div class="empty">Aucun critère de correspondance trouvé.</div>');
+ }catch(e){out.textContent="Recherche CPE Match impossible : "+e.message;}
+}
+async function exportAssetsCSV(){
+ try{
+  const {data}=await sb.auth.getSession(),token=data.session?.access_token||"";
+  if(!token)throw new Error("Session expirée. Reconnecte-toi.");
+  let apiBase=String(window.CSV_API_BASE||"");while(apiBase.endsWith("/"))apiBase=apiBase.slice(0,-1);
+  const response=await fetch(apiBase+"/api/reports/export.csv",{headers:{Authorization:"Bearer "+token}});
+  if(!response.ok)throw new Error((await response.text()).slice(0,180));
+  const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement("a");
+  link.href=url;link.download="congo-sec-vision-assets.csv";document.body.appendChild(link);link.click();link.remove();URL.revokeObjectURL(url);
+  toast("Export CSV téléchargé.");
+ }catch(e){toast("Export impossible : "+e.message);}
+}
+async function loadOpenCVEStatus(){
+ const badge=document.getElementById("opencveStatus"),out=document.getElementById("opencveResults");
+ if(badge)badge.textContent="Vérification…";
+ try{
+  const status=await api("/api/opencve/status");
+  if(badge)badge.textContent=status.connected?"Connecté · catalogue "+(status.catalog_count??"disponible"):status.configured?"Jeton présent · connexion impossible":"Non configuré";
+  if(!status.connected && out)out.textContent=status.message||"OpenCVE non configuré côté serveur.";
+  return status;
+ }catch(e){
+  if(badge)badge.textContent="Erreur de connexion";
+  if(out)out.textContent="OpenCVE : "+e.message;
+  return null;
+ }
+}
+let openCVEPage=1;
+async function searchOpenCVE(page=1){
+ const out=document.getElementById("opencveResults"),query=document.getElementById("opencveQuery").value.trim();
+ openCVEPage=Math.max(1,Number(page)||1);out.textContent="Recherche OpenCVE en cours…";
+ try{
+  const params=new URLSearchParams({page:String(openCVEPage),page_size:"50"});
+  if(query)params.set("q",query);
+  const data=await api("/api/opencve/cves?"+params.toString());
+  const rows=Array.isArray(data.results)?data.results:[];
+  out.innerHTML='<p class="notice">'+Number(data.count||rows.length)+' résultat(s) · page '+openCVEPage+' · source OpenCVE</p>'+
+   (rows.length?'<div class="tablewrap"><table><thead><tr><th>CVE</th><th>Titre</th><th>Dernière mise à jour</th><th>Détails</th></tr></thead><tbody>'+
+    rows.map(function(item){const id=String(item.cve_id||"");return '<tr><td><b>'+esc(id)+'</b></td><td>'+esc(item.title||item.description||"—")+'</td><td>'+fmt(item.updated_at)+'</td><td><button class="action" onclick="viewOpenCVE(\''+esc(id)+'\')">Détails + historique</button></td></tr>'}).join("")+
+   '</tbody></table></div>':'<div class="empty">Aucun résultat. Vérifie la syntaxe de recherche ou les droits du jeton.</div>')+
+   '<div class="toolbar" style="margin-top:10px"><button class="ghost" '+(data.previous?'':'disabled')+' onclick="searchOpenCVE('+(openCVEPage-1)+')">Page précédente</button><button class="ghost" '+(data.next?'':'disabled')+' onclick="searchOpenCVE('+(openCVEPage+1)+')">Page suivante</button></div>';
+ }catch(e){out.textContent="Recherche OpenCVE impossible : "+e.message;}
+}
+async function viewOpenCVE(cveId){
+ const out=document.getElementById("opencveResults");
+ out.textContent="Chargement du détail et de l'historique "+cveId+"…";
+ try{
+  const [detail,history]=await Promise.all([
+   api("/api/opencve/cves/"+encodeURIComponent(cveId)),
+   api("/api/opencve/cves/"+encodeURIComponent(cveId)+"/changes?page=1&page_size=10")
+  ]);
+  const changes=Array.isArray(history.results)?history.results:[];
+  const metrics=detail.metrics||{};
+  out.innerHTML='<div class="event"><i class="dot"></i><div><strong>'+esc(detail.cve_id||cveId)+' · '+esc(detail.title||"Détail OpenCVE")+'</strong><small>'+esc(detail.description||"")+'</small><p class="notice">'+esc(JSON.stringify(metrics).slice(0,1600))+'</p><p class="notice">Faiblesses : '+esc((detail.weaknesses||[]).join(", ")||"—")+' · Fournisseurs / produits : '+esc((detail.vendors||[]).join(", ")||"—")+'</p></div></div>'+
+   '<div class="cardtitle">Changements récents ('+Number(history.count||changes.length)+')</div>'+
+   (changes.length?changes.map(function(x){return '<div class="event"><i class="dot"></i><div><strong>'+esc(x.created_at||x.date||"Changement")+'</strong><small>'+esc(JSON.stringify(x).slice(0,800))+'</small></div></div>'}).join(""):'<div class="empty">Aucun changement publié pour cette CVE.</div>');
+ }catch(e){out.textContent="Détail OpenCVE indisponible : "+e.message;}
+}
 async function markCVENotification(id){try{await api("/api/cve/notifications/"+id,{method:"PATCH"});loadCVE()}catch(e){toast(e.message)}}
 function resetCVEFilters(){["cveSearch","cveVendor","cveProduct","cveCwe","cveSeverity","cveStatus","cveMinCvss","cveMinEpss"].forEach(id=>document.getElementById(id).value="");document.getElementById("cveKev").checked=false;loadCVE()}
 async function viewCVEHistory(cveId){try{const rows=await api("/api/cve/history?cve_id="+encodeURIComponent(cveId));alert(rows.length?rows.map(x=>x.created_at+" · "+x.event_type+" · "+x.details).join("\n"):"Aucun historique local pour cette CVE.")}catch(e){toast(e.message)}}
@@ -129,11 +290,38 @@ async function syncCVE(){try{document.getElementById("cveresult").textContent="S
 async function analyzeAI(){try{let r=await api("/api/ai/analyze",{method:"POST"});document.getElementById("aires").innerHTML=`<b>Mode : ${esc(r.mode)}</b><pre style="white-space:pre-wrap;color:#dceafa">${esc(typeof r.result==="string"?r.result:JSON.stringify(r.result,null,2))}</pre>`;await loadAIFindings()}catch(e){toast("Analyse : "+e.message)}}
 async function loadAIFindings(){try{let a=await api("/api/ai/findings");document.getElementById("aifindings").innerHTML=a.map(x=>`<div class="event"><i class="dot"></i><div><strong>${esc(x.title)} · ${esc(x.severity)}</strong><small>${esc(x.rule_id)} · ${esc(x.details)} · ${fmt(x.created_at)}</small></div></div>`).join("")||"Aucun constat."}catch(e){}}
 async function loadTopology(){try{let t=await api("/api/topology");document.getElementById("topologydata").innerHTML=`<b>${t.nodes.length} nœud(s), ${t.edges.length} lien(s)</b><pre style="white-space:pre-wrap;color:#b8cbe0">${esc(JSON.stringify(t,null,2))}</pre><p class="notice">${esc(t.limitation)}</p>`}catch(e){toast(e.message)}}
-async function loadHypervisors(){try{const r=await Promise.all([api("/api/hypervisors/providers"),api("/api/hypervisors/inventory")]);const providers=r[0],machines=r[1];document.getElementById("hvProviders").innerHTML=providers.map(function(p){return '<div class="kpi"><b>'+esc(p.provider)+'</b><span>'+(p.configured?'<span class="green">Configuré · lecture seule</span>':'<span class="hint">Non configuré</span>')+'</span></div>'}).join("")||'<div class="empty">Aucun connecteur</div>';document.getElementById("hvInventory").innerHTML=machines.length?'<div class="tablewrap"><table><thead><tr><th>Hyperviseur</th><th>Machine virtuelle</th><th>État</th><th>Hôte</th><th>CPU</th><th>Mémoire</th><th>Dernière observation</th></tr></thead><tbody>'+machines.map(function(x){return '<tr><td><b>'+esc(x.provider)+'</b></td><td>'+esc(x.name)+'<small style="display:block;color:#91abc3">'+esc(x.vm_id)+'</small></td><td>'+esc(x.state)+'</td><td>'+esc(x.metadata?.node||"—")+'</td><td>'+(x.metadata?.cpu_count??x.metadata?.cpu??"—")+'</td><td>'+(x.metadata?.memory_size_MiB??x.metadata?.memory_bytes??x.metadata?.memory_mb??"—")+'</td><td>'+fmt(x.last_seen)+'</td></tr>'}).join("")+'</tbody></table></div>':'<div class="empty">Aucune VM synchronisée. Configure un connecteur côté serveur puis lance une synchronisation.</div>';}catch(e){document.getElementById("hvInventory").textContent="Erreur : "+e.message;}}
-async function syncHypervisors(){const result=document.getElementById("hvResult");result.textContent="Synchronisation en cours…";try{const r=await api("/api/hypervisors/sync",{method:"POST"});result.textContent=r.results.map(function(x){return x.provider+": "+(x.status==="ok"?x.discovered+" détectée(s), "+x.saved+" enregistrée(s)":x.status==="not-configured"?"non configuré":x.message)}).join(" · ");toast("Synchronisation terminée");await loadHypervisors();}catch(e){result.textContent="Échec : "+e.message;toast("Échec de synchronisation");}}
+async function loadHypervisors(){
+ const [providerResult, inventoryResult, labResult] = await Promise.allSettled([
+  api("/api/hypervisors/providers"),
+  api("/api/hypervisors/inventory"),
+  api("/api/hypervisors/lab/inventory")
+ ]);
+ const providersNode=document.getElementById("hvProviders");
+ const inventoryNode=document.getElementById("hvInventory");
+ const labNode=document.getElementById("hvLabInventory");
+ if(providerResult.status==="fulfilled"){
+  const providers=providerResult.value;
+  providersNode.innerHTML=providers.map(function(p){return '<div class="kpi"><b>'+esc(p.provider)+'</b><span>'+(p.configured?'<span class="green">Configuré · lecture seule</span>':'<span class="hint">Non configuré</span>')+'</span><small style="display:block;margin-top:7px;color:#91abc3">'+esc(p.setup_note||"")+'</small><small style="display:block;margin-top:5px;color:'+(p.missing_variables?.length?'#ffbd55':'#23d3a0')+'">'+(p.missing_variables?.length?'À renseigner : '+esc(p.missing_variables.join(", ")):'Paramètres requis présents')+'</small></div>'}).join("")||'<div class="empty">Aucun connecteur</div>';
+ }else{
+  providersNode.textContent="Connecteurs indisponibles : "+(providerResult.reason?.message||"erreur API");
+ }
+ if(inventoryResult.status==="fulfilled"){
+  const machines=inventoryResult.value;
+  inventoryNode.innerHTML=machines.length?'<div class="tablewrap"><table><thead><tr><th>Hyperviseur</th><th>Machine virtuelle</th><th>État</th><th>Hôte</th><th>CPU</th><th>Mémoire</th><th>Dernière observation</th></tr></thead><tbody>'+machines.map(function(x){return '<tr><td><b>'+esc(x.provider)+'</b></td><td>'+esc(x.name)+'<small style="display:block;color:#91abc3">'+esc(x.vm_id)+'</small></td><td>'+esc(x.state)+'</td><td>'+esc(x.metadata?.node||x.metadata?.host||"—")+'</td><td>'+(x.metadata?.cpu_count??x.metadata?.cpu??"—")+'</td><td>'+(x.metadata?.memory_size_MiB??x.metadata?.memory_bytes??x.metadata?.memory_mb??"—")+'</td><td>'+fmt(x.last_seen)+'</td></tr>'}).join("")+'</tbody></table></div>':'<div class="empty">Aucune VM réelle synchronisée. Configure un connecteur côté serveur puis lance une synchronisation.</div>';
+ }else{
+  inventoryNode.textContent="Inventaire réel indisponible : "+(inventoryResult.reason?.message||"erreur API")+". Les données Supabase n'ont pas été modifiées.";
+ }
+ if(labResult.status==="fulfilled"){
+  const lab=labResult.value;
+  labNode.innerHTML=lab.enabled?'<p class="notice amber">SIMULATION ACTIVE — '+lab.count+' machines fictives. Non persistées, non connectées à un hyperviseur réel.</p><div class="tablewrap"><table><thead><tr><th>Source</th><th>Machine simulée</th><th>État fictif</th><th>CPU</th><th>Mémoire</th><th>Marqueur</th></tr></thead><tbody>'+lab.machines.map(function(x){return '<tr><td>'+esc(x.provider)+'</td><td><b>'+esc(x.name)+'</b><small style="display:block;color:#91abc3">'+esc(x.vm_id)+'</small></td><td>'+esc(x.state)+'</td><td>'+(x.metadata?.cpu_count??x.metadata?.cpu??"—")+'</td><td>'+(x.metadata?.memory_size_MiB??x.metadata?.memory_bytes??x.metadata?.memory_mb??"—")+'</td><td><span class="tag">SIMULATED · READ ONLY</span></td></tr>'}).join("")+'</tbody></table></div>':'<div class="empty">Mode laboratoire désactivé côté serveur. Active CSV_HYPERVISOR_LAB_MODE=true dans .env puis redémarre le service API.</div>';
+ }else{
+  labNode.textContent="Laboratoire indisponible : "+(labResult.reason?.message||"erreur API");
+ }
+}
+async function checkHypervisorConnections(){const out=document.getElementById("hvCheckResult");out.textContent="Vérification en lecture seule en cours…";try{const r=await api("/api/hypervisors/providers/check",{method:"POST"});out.innerHTML=r.results.map(x=>'<span class="tag">'+esc(x.provider)+' · '+(x.status==="reachable"?'Connecté · '+x.machines+' VM':x.status==="no-data"?'Collecteur prêt · en attente des données':x.status==="not-configured"?'Non configuré':'Erreur : '+esc(x.message||"connexion impossible"))+'</span>').join(" ");toast("Vérification terminée — aucune donnée enregistrée");}catch(e){out.textContent="Vérification impossible : "+e.message;toast(e.message)}}async function syncHypervisors(){const result=document.getElementById("hvResult");result.textContent="Synchronisation en cours…";try{const r=await api("/api/hypervisors/sync",{method:"POST"});result.textContent=r.results.map(function(x){return x.provider+": "+(x.status==="ok"?x.discovered+" détectée(s), "+x.saved+" enregistrée(s)":x.status==="not-configured"?"non configuré":x.message)}).join(" · ");toast("Synchronisation terminée");await loadHypervisors();}catch(e){result.textContent="Échec : "+e.message;toast("Échec de synchronisation");}}
 async function loadNetwork(){try{const rows=await api("/api/network/discovery");document.getElementById("networkRows").innerHTML=rows.length?'<div class="tablewrap"><table><thead><tr><th>Adresse IP</th><th>Nom d’hôte</th><th>Réseau</th><th>Source</th><th>État</th><th>Dernière observation</th></tr></thead><tbody>'+rows.map(function(x){return '<tr><td><b>'+esc(x.ip_address)+'</b></td><td>'+esc(x.hostname||"—")+'</td><td>'+esc(x.cidr)+'</td><td>'+esc(x.source)+'</td><td>'+esc(x.status)+'</td><td>'+fmt(x.last_seen)+'</td></tr>'}).join("")+'</tbody></table></div>':'<div class="empty">Aucun hôte observé. Les agents peuvent remonter les hôtes joignables de leur sous-réseau privé.</div>';}catch(e){document.getElementById("networkRows").textContent="Erreur : "+e.message;}}
 async function scanNetwork(){const cidr=document.getElementById("networkCidr").value.trim(),out=document.getElementById("networkResult");if(!cidr){out.textContent="Saisis un réseau au format CIDR.";return;}out.textContent="Scan en cours…";try{const r=await api("/api/network/discovery",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cidr:cidr})});out.textContent=r.cidr+" · "+r.hosts_scanned+" adresses testées · "+r.hosts_reachable+" hôte(s) joignable(s).";await loadNetwork();}catch(e){out.textContent="Échec : "+e.message;}}
-function showPage(p){if(p==="hypervisors")loadHypervisors();if(p==="network")loadNetwork();if(p==="incidents")loadIncidents();if(p==="automation")loadAutomation();if(p==="team")loadTeam();if(p==="audit")loadAudit();if(p==="ai")loadAIFindings();if(p==="topology")loadTopology();document.querySelectorAll(".page").forEach(x=>x.classList.remove("active"));document.getElementById(p).classList.add("active");document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("active",x.dataset.page===p));document.getElementById("crumb").textContent=document.querySelector(`[data-page="${p}"]`).textContent.trim()}
+function showPage(p){if(p==="vulns"){loadCVE();loadNVDStatus();loadOpenCVEStatus()}if(p==="settings")loadConfigStatus();if(p==="hypervisors")loadHypervisors();if(p==="network")loadNetwork();if(p==="incidents")loadIncidents();if(p==="automation")loadAutomation();if(p==="team")loadTeam();if(p==="audit")loadAudit();if(p==="ai")loadAIFindings();if(p==="topology")loadTopology();document.querySelectorAll(".page").forEach(x=>x.classList.remove("active"));document.getElementById(p).classList.add("active");document.querySelectorAll(".nav button").forEach(x=>x.classList.toggle("active",x.dataset.page===p));document.getElementById("crumb").textContent=document.querySelector(`[data-page="${p}"]`).textContent.trim()}
 document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>showPage(b.dataset.page));setInterval(()=>{if(accessToken&&document.getElementById("auth").style.display==="none")refresh()},15000);
 
 async function loadIncidents(){

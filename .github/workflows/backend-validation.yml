@@ -9,6 +9,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -16,7 +18,32 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Compile Python modules
         run: python -m compileall -q app tests agent
+      - name: Validate inline dashboard JavaScript
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          html = Path("app/static/index.html").read_text(encoding="utf-8")
+          scripts = re.findall(r"<script\b([^>]*)>(.*?)</script>", html, flags=re.I | re.S)
+          inline = [body for attrs, body in scripts if not re.search(r"\bsrc\s*=", attrs, flags=re.I) and body.strip()]
+          if not inline:
+              raise SystemExit("No inline dashboard JavaScript was found.")
+          Path("/tmp/congo-sec-vision-dashboard.js").write_text("\n".join(inline), encoding="utf-8")
+          print(f"Extracted {len(inline)} inline script block(s).")
+          PY
+          node --check /tmp/congo-sec-vision-dashboard.js
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
       - name: Build production API image
         run: docker build --pull -t congo-sec-vision:ci .
+      - name: Package clean source snapshot
+        run: |
+          git archive --format=zip --prefix=Congo-Sec-Vision-Enterprise/ -o /tmp/Congo-Sec-Vision-Enterprise.zip HEAD
+      - name: Upload source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Congo-Sec-Vision-Enterprise-source
+          path: /tmp/Congo-Sec-Vision-Enterprise.zip
+          if-no-files-found: error
+          retention-days: 7

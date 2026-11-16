@@ -50,4 +50,138 @@ Number of CPUs: 2
     def test_virtualbox_missing_host_binary_fails_closed(self, _which):
         with self.assertRaises(HypervisorError): VirtualBoxConnector().inventory()
 
-if __name__ == "__main__": unittest.main()
+
+# Additional adapter safety tests. Provider APIs and host commands are mocked;
+# these tests never contact real infrastructure.
+import json
+import os
+import sys
+import types
+from unittest.mock import Mock
+from app.hypervisors import HyperVConnector
+
+
+class HypervisorReadOnlySafetyTests(unittest.TestCase):
+    @patch.dict(os.environ, {
+        "CSV_VMWARE_URL": "https://vcenter.example",
+        "CSV_VMWARE_USERNAME": "readonly",
+        "CSV_VMWARE_PASSWORD": "not-a-real-password",
+        "CSV_VMWARE_VERIFY_TLS": "true",
+    }, clear=False)
+    @patch("app.hypervisors._request")
+    def test_vmware_session_and_inventory_methods(self, request):
+        request.side_effect = [
+            (200, b'"session-token"'),
+            (200, b'[{"vm":"vm-101","name":"lab-vm","power_state":"POWERED_ON"}]'),
+            (204, b""),
+        ]
+        rows = VMwareConnector().inventory()
+        self.assertEqual(rows[0]["id"], "vm-101")
+        self.assertEqual(request.call_args_list[0].kwargs["method"], "POST")
+        self.assertEqual(request.call_args_list[1].args[0], "https://vcenter.example/api/vcenter/vm")
+        self.assertEqual(request.call_args_list[2].kwargs["method"], "DELETE")
+
+    @patch.dict(os.environ, {"CSV_PROXMOX_URL":"https://pve.example:8006",
+        "CSV_PROXMOX_TOKEN_ID":"readonly@pve!inventory",
+        "CSV_PROXMOX_TOKEN_SECRET":"not-a-real-secret", "CSV_PROXMOX_VERIFY_TLS":"true"}, clear=False)
+    @patch("app.hypervisors._request", return_value=(200, b'{"data":[{"vmid":100,"name":"soc-lab","status":"running"}]}'))
+    def test_proxmox_uses_inventory_read_endpoint(self, request):
+        rows = ProxmoxConnector().inventory()
+        self.assertEqual(rows[0]["id"], "100")
+        self.assertIn("/api2/json/cluster/resources?type=vm", request.call_args.args[0])
+        self.assertTrue(request.call_args.kwargs["headers"]["Authorization"].startswith("PVEAPIToken="))
+
+    @patch.dict(os.environ, {"CSV_VBOXMANAGE_PATH":"VBoxManage"}, clear=False)
+    @patch("app.hypervisors.shutil.which", return_value="/usr/bin/VBoxManage")
+    @patch("app.hypervisors.subprocess.run")
+    def test_virtualbox_executes_only_inventory_command(self, run, _which):
+        run.return_value = Mock(returncode=0, stdout="Name: lab\nUUID: vm-1\nState: powered off\n")
+        rows = VirtualBoxConnector().inventory()
+        self.assertEqual(rows[0]["id"], "vm-1")
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/VBoxManage", "list", "vms", "--long"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 20)
+
+    @patch.dict(os.environ, {"CSV_HYPERV_HOST":"hyperv.example",
+        "CSV_HYPERV_USERNAME":"readonly", "CSV_HYPERV_PASSWORD":"not-a-real-password",
+        "CSV_HYPERV_TRANSPORT":"ntlm"}, clear=False)
+    def test_hyperv_runs_only_get_vm_over_https(self):
+        result = Mock(status_code=0, std_out=json.dumps(
+            {"Name":"soc-vm","Id":"vm-guid","State":"Running"}).encode())
+        session = Mock()
+        session.run_ps.return_value = result
+        fake_winrm = types.SimpleNamespace(Session=Mock(return_value=session))
+        with patch.dict(sys.modules, {"winrm":fake_winrm}):
+            rows = HyperVConnector().inventory()
+        self.assertEqual(rows[0]["id"], "vm-guid")
+        self.assertTrue(fake_winrm.Session.call_args.args[0].startswith("https://"))
+        command = session.run_ps.call_args.args[0]
+        self.assertIn("Get-VM", command)
+        self.assertNotRegex(command, r"(?i)\b(Start|Stop|Remove|Set)-VM\b")
+
+
+    @patch.dict("os.environ", {
+        "CSV_VBOXMANAGE_PATH": "VBoxManage",
+        "CSV_VBOX_COLLECTOR_TOKEN": "host-collector-test-token",
+    }, clear=False)
+    @patch("app.hypervisors.shutil.which", return_value=None)
+    def test_virtualbox_is_configured_when_windows_host_collector_is_enabled(self, _which):
+        from app.hypervisors import configured_providers
+        provider = next(x for x in configured_providers() if x["provider"] == "virtualbox")
+        self.assertTrue(provider["configured"])
+        self.assertTrue(provider["host_collector"])
+        self.assertEqual(provider["mode"], "read-only")
+
+
+
+
+class HypervisorConfigurationSafetyTests(unittest.TestCase):
+    @patch.dict(os.environ, {
+        "CSV_VMWARE_URL": "https://vcenter.example",
+        "CSV_VMWARE_USERNAME": "csv-readonly",
+        "CSV_VMWARE_PASSWORD": "vmware-private-secret",
+        "CSV_PROXMOX_URL": "https://pve.example:8006",
+        "CSV_PROXMOX_TOKEN_ID": "csv@pve!soc",
+        "CSV_PROXMOX_TOKEN_SECRET": "proxmox-private-secret",
+        "CSV_HYPERV_HOST": "https://hyperv.example:5986/wsman",
+        "CSV_HYPERV_USERNAME": "DOMAIN\\csv",
+        "CSV_HYPERV_PASSWORD": "hyperv-private-secret",
+        "CSV_VBOX_COLLECTOR_TOKEN": "collector-private-secret",
+    }, clear=True)
+    @patch("app.hypervisors.shutil.which", return_value=None)
+    def test_readiness_reports_configured_providers_without_secret_values(self, _which):
+        from app.hypervisors import configured_providers
+        result = {x["provider"]: x for x in configured_providers()}
+        for provider in ("vmware", "proxmox", "hyperv", "virtualbox"):
+            self.assertTrue(result[provider]["configured"])
+            self.assertEqual(result[provider]["mode"], "read-only")
+        self.assertTrue(result["virtualbox"]["host_collector"])
+        rendered = repr(result)
+        for secret in ("vmware-private-secret", "proxmox-private-secret",
+                       "hyperv-private-secret", "collector-private-secret"):
+            self.assertNotIn(secret, rendered)
+
+    @patch.dict(os.environ, {
+        "CSV_VMWARE_URL": "http://vcenter.example",
+        "CSV_VMWARE_USERNAME": "readonly",
+        "CSV_VMWARE_PASSWORD": "secret",
+    }, clear=False)
+    @patch("app.hypervisors._request")
+    def test_vmware_refuses_plaintext_before_sending_credentials(self, request):
+        with self.assertRaises(HypervisorError):
+            VMwareConnector().inventory()
+        request.assert_not_called()
+
+    @patch.dict(os.environ, {
+        "CSV_PROXMOX_URL": "http://pve.example:8006",
+        "CSV_PROXMOX_TOKEN_ID": "csv@pve!soc",
+        "CSV_PROXMOX_TOKEN_SECRET": "secret",
+    }, clear=False)
+    @patch("app.hypervisors._request")
+    def test_proxmox_refuses_plaintext_before_sending_token(self, request):
+        with self.assertRaises(HypervisorError):
+            ProxmoxConnector().inventory()
+        request.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

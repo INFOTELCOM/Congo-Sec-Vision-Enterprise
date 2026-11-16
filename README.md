@@ -99,7 +99,7 @@ L'agent Windows/Linux tente de reconnaître si le système invité fonctionne da
 
 Cette détection est une heuristique exécutée depuis le système invité : elle peut retourner « non détectée » sur certains environnements et ne constitue pas une preuve de l'hyperviseur. Elle ne donne pas accès à l'état d'alimentation, aux snapshots, aux consoles, à la configuration ou à l'administration de l'hyperviseur.
 
-Pour superviser une VM, installer l'agent dans le système invité comme sur un poste physique et autoriser sa connexion HTTPS vers l'API SOC. La découverte et l'administration centralisées des hôtes VMware, VirtualBox, Hyper-V et Proxmox via leurs API constituent une intégration distincte, non incluse dans cette première étape. Aucun scan réseau automatique ni accès non autorisé n'est effectué.
+Pour superviser une VM, installer l'agent dans le système invité comme sur un poste physique et autoriser sa connexion HTTPS vers l'API SOC. En complément, les connecteurs centraux VMware, Proxmox, VirtualBox et Hyper-V sont intégrés dans la branche et exposent uniquement les inventaires en lecture seule. Leur état réel dépend des variables d'environnement, de la connectivité réseau et des droits des comptes techniques. Suivre la procédure de mise en service dans `docs/HYPERVISORS.md`. Aucun démarrage, arrêt, suppression, reconfiguration ou snapshot n'est déclenché par ces connecteurs.
 
 ## Intelligence CVE — NVD, EPSS et CISA KEV
 
@@ -150,3 +150,24 @@ Les enregistrements d'inventaire sont persistés dans la table soc.hypervisor_in
 ## Découverte réseau
 
 La rubrique Découverte réseau rassemble les hôtes détectés par les agents et les scans ICMP manuels. Les scans manuels sont limités aux sous-réseaux privés de 256 adresses maximum et réservés aux rôles admin/analyst. Les agents limitent chaque scan local à une fois par sous-réseau toutes les dix minutes. Cette découverte n'enrôle pas les machines et ne remplace pas un inventaire authentifié.
+
+
+## Intégration NVD et OpenCVE
+
+Le centre CVE combine désormais deux voies complémentaires :
+- **NVD API 2.0** : recherche de CVE, détail, historique, CPE Dictionary et critères CPE Match. La clé `NVD_API_KEY` reste facultative ; sans elle, les requêtes sont temporisées pour respecter le débit public. NVD publie aussi CVSS, CWE, CPE, KEV, SSVC et déclarations de produits affectés lorsqu'ils sont disponibles.
+- **OpenCVE API v2** : recherche avancée, détail et historique des changements. Cette intégration nécessite un jeton d'organisation OpenCVE, stocké uniquement dans `OPENCVE_API_TOKEN` sur le serveur. Créer un jeton en lecture seule (ou avec les seuls scopes de lecture disponibles), puis saisir sa valeur directement dans le fichier local `.env`. Ne jamais le coller dans GitHub, le navigateur ou une conversation.
+
+L'interface affiche l'état de chaque source. NVD reste utilisable même si OpenCVE n'est pas configuré ; les erreurs d'OpenCVE n'interrompent pas la consultation NVD. Les routes interactives sont authentifiées par une session Supabase.
+
+## Mise en service réelle des hyperviseurs
+
+Les connecteurs ne sont jamais marqués connectés simplement parce que leurs champs sont remplis : le bouton **Tester les connexions** effectue une vraie lecture de l'inventaire. Les détails des variables manquantes sont affichés dans la console. Configurer les variables `CSV_*` du fichier local `.env` selon `docs/HYPERVISORS.md`, puis recréer uniquement le service API :
+```bash
+docker compose up -d --no-deps --force-recreate api
+```
+Le bouton **Synchroniser les hyperviseurs réels** enregistre l'inventaire authentifié dans le schéma Supabase `soc`. Le laboratoire synthétique (`CSV_HYPERVISOR_LAB_MODE=true`) est séparé, désactivé par défaut et ne peut pas être synchronisé comme un inventaire réel.
+
+## Limites des boutons Gouvernance
+
+Le bouton d'ajout d'équipe ajoute une entrée au registre local SQLite ; il ne crée pas un utilisateur Supabase Auth et n'accorde aucun rôle. Les workflows sont enregistrés désactivés et les approbations enregistrent des décisions de gouvernance ; elles n'exécutent volontairement aucune commande distante. Ces limites sont indiquées dans l'interface afin de ne pas présenter une validation administrative comme une remédiation effectuée.
