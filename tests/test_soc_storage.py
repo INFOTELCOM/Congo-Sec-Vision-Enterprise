@@ -42,8 +42,13 @@ class SupabaseSOCStorageTests(unittest.TestCase):
         self.assertEqual(json.loads(request.data.decode()), {"id": "asset-1"})
 
     def test_rejects_unsupported_method(self):
-        with self.assertRaisesRegex(ValueError, "Unsupported Supabase method"):
-            supabase_public_request("assets", "DELETE", [])
+        env = {
+            "SUPABASE_URL": "https://example.supabase.co",
+            "SUPABASE_SERVICE_ROLE_KEY": "server-only-test-key",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with self.assertRaisesRegex(ValueError, "Unsupported Supabase method"):
+                supabase_public_request("assets", "DELETE", [])
 
 
 if __name__ == "__main__":
