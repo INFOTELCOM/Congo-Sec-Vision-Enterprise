@@ -346,12 +346,14 @@ def collect_processes():
 
 def collect():
     vm=psutil.virtual_memory(); disk=psutil.disk_usage(os.path.abspath(os.sep))
+    software = software_inventory()
+    software_limit = 500 if platform.system() == "Windows" else 1500
     return {"hostname":socket.gethostname(),"platform":platform.system(),"platform_release":platform.release(),
       "platform_version":platform.version(),"architecture":platform.machine(),"processor":platform.processor(),
       "cpu_percent":psutil.cpu_percent(interval=1),"memory_percent":vm.percent,"disk_percent":disk.percent,
       "ip_addresses":[{"interface":x["interface"],"address":x["address"]} for x in local_interfaces()],
       "interfaces":local_interfaces(),"network_discoveries":discover_connected_networks(),
-      "os_installation":os_installation_info(),"software":software_inventory(),"logs":collect_logs(),
+      "os_installation":os_installation_info(),"software":software,"software_inventory_complete":len(software)<software_limit,"logs":collect_logs(),
       "endpoint_protection":endpoint_protection(),"listening_ports":collect_listening_ports(),
       "network_connections":collect_network_connections(),"processes":collect_processes(),
       "virtualization":detect_virtualization(),"agent_version":"0.3.0","collected_at":datetime.now(timezone.utc).isoformat()}
