@@ -11,6 +11,7 @@ from app.hypervisors import HypervisorError, configured_providers, inventory as 
 from app.hypervisor_lab import lab_inventory as get_hypervisor_lab_inventory
 from app.network_discovery import discover_network, validate_network
 from app.opencve import OpenCVEError, check_connection as check_opencve_connection, search_cves as search_opencve_cves, get_cve as get_opencve_cve, get_cve_changes as get_opencve_changes
+from app.soc_storage import supabase_public_request, supabase_public_configured
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -256,6 +257,111 @@ def asset_json(a, online=None):
       "virtualization":inv.get("virtualization",{"is_virtual_machine":False,"provider":None}),
       "interfaces":inv.get("interfaces",[])}
 
+
+def sync_asset_to_supabase(asset_id, data):
+    """Mirror the authenticated endpoint identity into public.assets before SOC child rows."""
+    if not supabase_public_configured():
+        return {"status":"not-configured","message":"SUPABASE_SERVICE_ROLE_KEY is not configured on the API server."}
+    stamp=now()
+    payload={
+        "id":asset_id,
+        "hostname":str(data.get("hostname") or "unknown")[:255],
+        "platform":str(data.get("platform") or "unknown")[:80],
+        "ip_addresses":data.get("ip_addresses",[]),
+        "inventory":data,
+        "first_seen":stamp,
+        "last_seen":stamp,
+    }
+    try:
+        supabase_public_request("assets?on_conflict=id","POST",payload)
+        return {"status":"ok","asset":"saved"}
+    except Exception as exc:
+        return {"status":"error","stage":"asset","message":str(exc)[:500]}
+
+
+def sync_endpoint_telemetry(asset_id, data):
+    """Persist agent network/process observations and indicative alerts in Supabase."""
+    if not supabase_public_configured():
+        return {"status":"not-configured","message":"SUPABASE_SERVICE_ROLE_KEY is not configured on the API server."}
+    stamp=now()
+    network=[]
+    for item in (data.get("network_connections") or [])[:500]:
+        if not isinstance(item,dict):
+            continue
+        protocol=str(item.get("protocol") or "other").lower()
+        if protocol not in {"tcp","udp","icmp","other"}:
+            protocol="other"
+        def clean_ip(value):
+            value=str(value or "").strip()
+            if not value:
+                return None
+            try:
+                return str(ipaddress.ip_address(value))
+            except ValueError:
+                return None
+        try:
+            local_port=max(0,min(65535,int(item.get("local_port") or 0)))
+            remote_port=max(0,min(65535,int(item.get("remote_port") or 0)))
+            pid=max(0,int(item.get("pid") or 0))
+        except (TypeError,ValueError):
+            continue
+        network.append({
+            "asset_id":asset_id,"protocol":protocol,
+            "local_address":clean_ip(item.get("local_address")),
+            "local_port":local_port,"remote_address":clean_ip(item.get("remote_address")),
+            "remote_port":remote_port,"state":str(item.get("status") or "unknown")[:32],
+            "pid":pid,"process_name":str(item.get("process_name") or "")[:255],
+            "first_seen":stamp,"last_seen":stamp,"observations":1,
+        })
+    processes=[]
+    alerts=[]
+    suspicious=("mimikatz","lazagne","keylogger","njrat","darkcomet","remcos",
+                "asyncrat","nanocore","quasar","xworm","meterpreter","cobaltstrike")
+    for item in (data.get("processes") or [])[:500]:
+        if not isinstance(item,dict):
+            continue
+        try:
+            pid=max(0,int(item.get("pid") or 0))
+        except (TypeError,ValueError):
+            continue
+        name=str(item.get("name") or "unknown")[:255]
+        executable=str(item.get("executable") or "")[:1000]
+        started=str(item.get("started_at") or "").strip() or None
+        processes.append({
+            "asset_id":asset_id,"pid":pid,"name":name,"executable":executable,
+            "started_at":started,"first_seen":stamp,"last_seen":stamp,
+            "signature_status":"unknown","reputation":"unknown",
+        })
+        matched=[term for term in suspicious if term in (name+" "+executable).lower()]
+        if matched:
+            dedupe="proc-review:"+asset_id+":"+name.lower()
+            alerts.append({
+                "asset_id":asset_id,"rule_id":"PROC-REVIEW-001",
+                "dedupe_key":dedupe,"title":"Processus nécessitant une vérification",
+                "description":"Un nom ou chemin de processus correspond à un indicateur à examiner. Ce signal ne confirme pas un malware ; vérifier la signature, le hash, la réputation et le contexte.",
+                "severity":"medium","confidence":0.45,"status":"new","category":"endpoint",
+                "evidence":{"pid":pid,"name":name,"executable":executable,"matched_terms":matched},
+                "first_seen":stamp,"last_seen":stamp,"occurrence_count":1,
+                "created_at":stamp,"updated_at":stamp,
+            })
+    try:
+        if network:
+            supabase_public_request(
+                "soc_network_connections?on_conflict=asset_id,protocol,local_address,local_port,remote_address,remote_port,state,pid",
+                "POST",network)
+        if processes:
+            supabase_public_request(
+                "soc_process_observations?on_conflict=asset_id,pid,name,started_at",
+                "POST",processes)
+        if alerts:
+            supabase_public_request(
+                "soc_security_alerts?on_conflict=dedupe_key","POST",alerts)
+        return {"status":"ok","network_connections":len(network),
+                "processes":len(processes),"indicative_alerts":len(alerts)}
+    except Exception as exc:
+        return {"status":"error","stage":"telemetry","message":str(exc)[:500],
+                "network_connections_prepared":len(network),"processes_prepared":len(processes)}
+
 @app.get("/")
 def index(): return FileResponse("app/static/index.html")
 
@@ -281,6 +387,7 @@ def readiness():
     worker_running = bool(task is not None and not task.done())
     checks = {
         "database": "ok" if database_ok else "error",
+        "supabase_soc_storage": "configured" if supabase_public_configured() else "missing_service_role_key",
         "cve_worker": "running" if worker_running else "not-running",
         "last_cve_sync_attempt": last_sync,
         "cve_sync_interval_minutes": max(
@@ -296,17 +403,23 @@ def auth_check(authorization: str|None=Header(default=None)):
 @app.post("/api/agents/enroll")
 async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     if not secrets.compare_digest(bearer(authorization) or "", ENROLL): raise HTTPException(403,"Enrollment not authorized")
-    aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
+    initial_data=await request.json()
+    aid=asset_inventory(initial_data)
+    supabase_sync=sync_asset_to_supabase(aid, initial_data)
+    if supabase_sync.get("status")=="ok":
+        supabase_sync=sync_endpoint_telemetry(aid, initial_data)
+    token=secrets.token_urlsafe(36)
     with conn() as c:
         c.execute("INSERT INTO agent_tokens VALUES(?,?)",(hashlib.sha256(token.encode("utf-8")).hexdigest(),aid))
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
     background_tasks.add_task(run_internal_ai, aid)
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
-    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True}
+    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True,"supabase_sync":supabase_sync}
 @app.post("/api/agents/heartbeat")
 async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     aid=require_agent(authorization); data=await request.json(); asset_inventory(data,aid)
+    supabase_sync=sync_asset_to_supabase(aid, data)
     with conn() as c:
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
@@ -317,7 +430,9 @@ async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorizat
     for entry in data.get("logs",[])[:250]:
         ingest_log(aid,entry)
     ingest_endpoint_telemetry(aid, data)
-    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due}
+    if supabase_sync.get("status")=="ok":
+        supabase_sync=sync_endpoint_telemetry(aid, data)
+    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due,"supabase_sync":supabase_sync}
 
 def ingest_endpoint_telemetry(asset_id, data):
     """Persist endpoint connection/process metadata received over the authenticated agent channel."""
@@ -1464,4 +1579,4 @@ def check_hypervisor_providers(authorization: str | None = Header(default=None))
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
     require_admin(authorization)
-    return {"authentication":"Supabase Auth session validated server-side","database":"SQLite for legacy SOC modules; Supabase PostgreSQL for hypervisor inventory; full migration pending","tls":"HTTPS reverse-proxy required for deployment","mfa":"not-enforced; Supabase MFA/AAL2 integration pending","rbac":"server-enforced app_metadata roles: admin, analyst, viewer, incident_responder","rate_limiting":"not-configured","remediation":"approval-only; no remote execution","agent_tokens":"SHA-256 digests at rest; rotation workflow pending","agent_enrollment":"shared bootstrap token; protect and rotate before production","mode":"laboratory","production_ready":False}
+    return {"authentication":"Supabase Auth session validated server-side","database":"Supabase PostgreSQL for SOC endpoint telemetry and hypervisor inventory; SQLite retained for legacy modules pending migration","tls":"HTTPS reverse-proxy required for deployment","mfa":"not-enforced; Supabase MFA/AAL2 integration pending","rbac":"server-enforced app_metadata roles: admin, analyst, viewer, incident_responder","rate_limiting":"not-configured","remediation":"approval-only; no remote execution","agent_tokens":"SHA-256 digests at rest; rotation workflow pending","agent_enrollment":"shared bootstrap token; protect and rotate before production","mode":"laboratory","soc_telemetry_supabase":supabase_public_configured(),"production_ready":False}
