@@ -108,12 +108,29 @@ def software_inventory():
         except (ValueError, TypeError):
             pass
     elif shutil.which("dpkg-query"):
-        raw = run(["dpkg-query", "-W", "-f=${binary:Package}\\t${Version}\\t${Maintainer}\\n"], 25)
+        install_dates = {}
+        for log_path in ("/var/log/dpkg.log", "/var/log/dpkg.log.1"):
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
+                    for log_line in log_file:
+                        fields = log_line.split()
+                        if len(fields) >= 4 and fields[2] == "install":
+                            package = fields[3]
+                            try:
+                                installed = datetime.strptime(fields[0] + " " + fields[1], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).isoformat()
+                                install_dates[package] = installed
+                                install_dates[package.split(":")[0]] = installed
+                            except ValueError:
+                                continue
+            except OSError:
+                continue
+        raw = run(["dpkg-query", "-W", "-f=\${binary:Package}\\\\t\${Version}\\\\t\${Maintainer}\\\\n"], 25)
         for line in raw.splitlines()[:1500]:
             p = line.split(chr(9))
             if len(p) >= 2:
+                installed_at = install_dates.get(p[0]) or install_dates.get(p[0].split(":")[0]) or ""
                 items.append({"name": p[0], "version": p[1], "vendor": p[2] if len(p) > 2 else "",
-                              "installed_at": "", "install_location": "", "install_scope": "system",
+                              "installed_at": installed_at, "install_location": "", "install_scope": "system",
                               "package_id": p[0]})
     elif shutil.which("rpm"):
         raw = run(["rpm", "-qa", "--qf", "%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{VENDOR}\\t%{INSTALLTIME:date}\\n"], 25)
