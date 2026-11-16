@@ -183,7 +183,7 @@ class ApiSmokeTests(unittest.TestCase):
 
     def test_attack_surface_scan_rejects_public_network(self):
         from unittest.mock import patch
-        with patch("app.main.supabase_public_configured", return_value=True), \\
+        with patch("app.main.supabase_public_configured", return_value=True), \
              patch("app.main.supabase_public_request") as supabase:
             response = self.client.post("/api/network/attack-surface-scan", headers=self.headers,
                                         json={"cidr":"8.8.8.0/24"})
@@ -206,9 +206,9 @@ class ApiSmokeTests(unittest.TestCase):
             if resource.startswith("soc_network_devices?on_conflict=") and method == "POST":
                 return [{"id":"123e4567-e89b-12d3-a456-426614174001","ip_address":"192.168.1.10"}]
             return []
-        with patch("app.main.supabase_public_configured", return_value=True), \\
-             patch("app.main.supabase_public_request", side_effect=supabase_request) as supabase, \\
-             patch("app.main.discover_network", return_value=[{"ip_address":"192.168.1.10","hostname":"test-host"}]), \\
+        with patch("app.main.supabase_public_configured", return_value=True), \
+             patch("app.main.supabase_public_request", side_effect=supabase_request) as supabase, \
+             patch("app.main.discover_network", return_value=[{"ip_address":"192.168.1.10","hostname":"test-host"}]), \
              patch("app.main.scan_network_ports", return_value=scan):
             response = self.client.post("/api/network/attack-surface-scan", headers=self.headers,
                                         json={"cidr":"192.168.1.0/24"})
