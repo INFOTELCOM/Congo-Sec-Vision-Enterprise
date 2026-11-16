@@ -495,7 +495,8 @@ def sync_endpoint_telemetry(asset_id, data):
         if processes:
             send_batches("soc_process_observations?on_conflict=asset_id,pid,name,started_at", processes)
         if software:
-            supabase_public_request("software?asset_id=eq." + urllib.parse.quote(asset_id, safe=""), "PATCH", {"is_present": False})
+            if data.get("software_inventory_complete") is True:
+                supabase_public_request("software?asset_id=eq." + urllib.parse.quote(asset_id, safe=""), "PATCH", {"is_present": False})
             send_batches("software?on_conflict=asset_id,software_fingerprint", software)
         if protection_row:
             supabase_public_request("soc_endpoint_protection?on_conflict=asset_id,provider", "POST", protection_row)
@@ -1186,11 +1187,11 @@ async def run_attack_surface_scan(request: Request, authorization: str | None = 
             "soc_network_devices?network_cidr=eq." + urllib.parse.quote(str(network), safe=""),
             "PATCH", {"status": "inactive"}
         )
-        supabase_public_request(
-            "soc_listening_ports?ip_address=gte." + urllib.parse.quote(str(network.network_address), safe="") +
-            "&ip_address=lte." + urllib.parse.quote(str(network.broadcast_address), safe=""),
-            "PATCH", {"is_current": False}
+        port_range_filter = "and=" + urllib.parse.quote(
+            "(ip_address.gte." + str(network.network_address) + ",ip_address.lte." + str(network.broadcast_address) + ")",
+            safe=""
         )
+        supabase_public_request("soc_listening_ports?" + port_range_filter, "PATCH", {"is_current": False})
         device_payload = []
         for host in hosts:
             opened = host.get("open_ports") or []
