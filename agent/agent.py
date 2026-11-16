@@ -240,7 +240,9 @@ def main():
             else:
                 try:
                     result=post(base+"/api/agents/heartbeat",data,token)
-                    print("Heartbeat",data["hostname"],"logs",result.get("logs_received",0),flush=True)
+                    sync=result.get("supabase_sync") or {}
+                    print("Heartbeat",data["hostname"],"logs",result.get("logs_received",0),
+                          "Supabase SOC",sync.get("status","unknown"),flush=True)
                 except urllib.error.HTTPError as e:
                     if e.code==401 and a.enrollment_token:
                         token=None
