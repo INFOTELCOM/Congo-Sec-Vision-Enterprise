@@ -10,7 +10,9 @@ from app.authz import get_user_roles
 from app.hypervisors import HypervisorError, configured_providers, inventory as collect_hypervisor_inventory
 from app.hypervisor_lab import lab_inventory as get_hypervisor_lab_inventory
 from app.network_discovery import discover_network, validate_network
+from app.port_scanner import scan_network_ports
 from app.opencve import OpenCVEError, check_connection as check_opencve_connection, search_cves as search_opencve_cves, get_cve as get_opencve_cve, get_cve_changes as get_opencve_changes
+from app.soc_storage import supabase_public_request, supabase_public_configured
 
 DB = os.getenv("DATABASE_PATH", "congo_sec_vision.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -56,6 +58,19 @@ def init():
           name TEXT, version TEXT, vendor TEXT, collected_at TEXT);
         CREATE TABLE IF NOT EXISTS log_findings(id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT,
           severity TEXT, rule_id TEXT, title TEXT, details TEXT, created_at TEXT);
+        CREATE TABLE IF NOT EXISTS network_connections(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT NOT NULL, protocol TEXT NOT NULL,
+          local_address TEXT, local_port INTEGER, remote_address TEXT, remote_port INTEGER,
+          status TEXT, pid INTEGER, process_name TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+          observations INTEGER NOT NULL DEFAULT 1,
+          UNIQUE(asset_id,protocol,local_address,local_port,remote_address,remote_port,status,pid));
+        CREATE INDEX IF NOT EXISTS idx_network_connections_last_seen ON network_connections(last_seen);
+        CREATE TABLE IF NOT EXISTS process_observations(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id TEXT NOT NULL, pid INTEGER NOT NULL,
+          name TEXT NOT NULL, executable TEXT DEFAULT '', started_at TEXT DEFAULT '',
+          first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+          UNIQUE(asset_id,pid,name,started_at));
+        CREATE INDEX IF NOT EXISTS idx_process_observations_last_seen ON process_observations(last_seen);
         CREATE TABLE IF NOT EXISTS incidents(
           id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT DEFAULT '',
           severity TEXT NOT NULL DEFAULT 'medium', status TEXT NOT NULL DEFAULT 'open',
@@ -95,6 +110,8 @@ def init():
                           (hashlib.sha256(stored_token.encode("utf-8")).hexdigest(), stored_token))
         cols={r["name"] for r in c.execute("PRAGMA table_info(events)").fetchall()}
         if "raw" not in cols: c.execute("ALTER TABLE events ADD COLUMN raw TEXT")
+        if "event_fingerprint" not in cols: c.execute("ALTER TABLE events ADD COLUMN event_fingerprint TEXT")
+        c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_events_event_fingerprint ON events(event_fingerprint) WHERE event_fingerprint IS NOT NULL")
         vuln_cols={r["name"] for r in c.execute("PRAGMA table_info(vulnerabilities)").fetchall()}
         for col, ddl in {
             "software_name":"TEXT DEFAULT ''","software_version":"TEXT DEFAULT ''","vendor":"TEXT DEFAULT ''",
@@ -243,6 +260,265 @@ def asset_json(a, online=None):
       "virtualization":inv.get("virtualization",{"is_virtual_machine":False,"provider":None}),
       "interfaces":inv.get("interfaces",[])}
 
+
+def sync_asset_to_supabase(asset_id, data):
+    """Mirror the authenticated endpoint identity into public.assets before SOC child rows."""
+    if not supabase_public_configured():
+        return {"status":"not-configured","message":"SUPABASE_SERVICE_ROLE_KEY is not configured on the API server."}
+    stamp=now()
+    with conn() as db:
+        asset_row=db.execute("SELECT first_seen FROM assets WHERE id=?",(asset_id,)).fetchone()
+    first_seen=asset_row["first_seen"] if asset_row else stamp
+    os_info=data.get("os_installation") or {}
+    payload={
+        "id":asset_id,
+        "hostname":str(data.get("hostname") or "unknown")[:255],
+        "platform":str(data.get("platform") or "unknown")[:80],
+        "ip_addresses":data.get("ip_addresses",[]),
+        "os_install_date":str(os_info.get("date") or "") or None,
+        "os_install_date_source":str(os_info.get("source") or "")[:120],
+        "os_install_date_confidence":os_info.get("confidence"),
+        "inventory":{k:data.get(k) for k in ("cpu_percent","memory_percent","disk_percent","virtualization","interfaces","agent_version","platform_release","architecture","processor","collected_at","os_installation") if k in data},
+        "first_seen":first_seen,
+        "last_seen":stamp,
+    }
+    try:
+        supabase_public_request("assets?on_conflict=id","POST",payload)
+        return {"status":"ok","asset":"saved"}
+    except Exception as exc:
+        return {"status":"error","stage":"asset","message":str(exc)[:500]}
+
+
+def sync_endpoint_telemetry(asset_id, data):
+    """Persist endpoint inventory, protection state, detections and network observations in Supabase."""
+    if not supabase_public_configured():
+        return {"status": "not-configured", "message": "SUPABASE_SERVICE_ROLE_KEY is required on the API server."}
+    stamp = now()
+
+    def clean_ip(value):
+        try:
+            return str(ipaddress.ip_address(str(value or "").strip()))
+        except ValueError:
+            return None
+
+    def clean_timestamp(value):
+        value = str(value or "").strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).isoformat()
+        except ValueError:
+            return None
+
+    def send_batches(resource, rows, size=200):
+        for offset in range(0, len(rows), size):
+            supabase_public_request(resource, "POST", rows[offset:offset + size])
+
+    network = []
+    for item in (data.get("network_connections") or [])[:500]:
+        if not isinstance(item, dict):
+            continue
+        protocol = str(item.get("protocol") or "other").lower()
+        if protocol not in {"tcp", "udp", "icmp", "other"}:
+            protocol = "other"
+        try:
+            local_port = max(0, min(65535, int(item.get("local_port") or 0)))
+            remote_port = max(0, min(65535, int(item.get("remote_port") or 0)))
+            pid = max(0, int(item.get("pid") or 0))
+        except (TypeError, ValueError):
+            continue
+        network.append({
+            "asset_id": asset_id, "protocol": protocol,
+            "local_address": clean_ip(item.get("local_address")), "local_port": local_port,
+            "remote_address": clean_ip(item.get("remote_address")), "remote_port": remote_port,
+            "state": str(item.get("status") or "unknown")[:32], "pid": pid,
+            "process_name": str(item.get("process_name") or "")[:255],
+            "first_seen": stamp, "last_seen": stamp, "observations": 1,
+        })
+
+    processes = []
+    alerts = []
+    suspicious = ("mimikatz", "lazagne", "keylogger", "njrat", "darkcomet", "remcos",
+                  "asyncrat", "nanocore", "quasar", "xworm", "meterpreter", "cobaltstrike")
+    for item in (data.get("processes") or [])[:500]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            pid = max(0, int(item.get("pid") or 0))
+        except (TypeError, ValueError):
+            continue
+        name = str(item.get("name") or "unknown")[:255]
+        executable = str(item.get("executable") or "")[:1000]
+        started = clean_timestamp(item.get("started_at"))
+        processes.append({
+            "asset_id": asset_id, "pid": pid, "name": name, "executable": executable,
+            "started_at": started, "first_seen": stamp, "last_seen": stamp,
+            "signature_status": str(item.get("signature_status") or "unknown")[:32],
+            "reputation": str(item.get("reputation") or "unknown")[:32],
+            "sha256": str(item.get("sha256") or "")[:64] or None,
+        })
+        matched = [term for term in suspicious if term in (name + " " + executable).lower()]
+        if matched:
+            dedupe = "proc-review:" + asset_id + ":" + name.lower()
+            alerts.append({
+                "asset_id": asset_id, "rule_id": "PROC-REVIEW-001", "dedupe_key": dedupe,
+                "title": "Processus nécessitant une vérification",
+                "description": "Un nom ou chemin correspond à un indicateur à examiner. Ce signal ne confirme pas un malware ; vérifier la signature, le hash, la réputation et le contexte.",
+                "severity": "medium", "confidence": 0.45, "status": "new", "category": "endpoint",
+                "evidence": {"pid": pid, "name": name, "executable": executable, "matched_terms": matched},
+                "first_seen": stamp, "last_seen": stamp, "occurrence_count": 1,
+                "created_at": stamp, "updated_at": stamp,
+            })
+
+    software = []
+    for item in (data.get("software") or [])[:1500]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:255]
+        if not name:
+            continue
+        version = str(item.get("version") or "")[:100]
+        vendor = str(item.get("vendor") or "")[:255]
+        location = str(item.get("install_location") or "")[:1000]
+        fingerprint = hashlib.sha256("|".join((asset_id, name.lower(), version, vendor.lower(), location)).encode("utf-8")).hexdigest()
+        installed = str(item.get("installed_at") or "").strip()
+        if len(installed) == 10:
+            installed = installed + "T00:00:00+00:00"
+        software.append({
+            "asset_id": asset_id, "name": name, "version": version, "vendor": vendor,
+            "collected_at": stamp, "installed_at": clean_timestamp(installed),
+            "install_location": location, "install_scope": str(item.get("install_scope") or "")[:40],
+            "package_id": str(item.get("package_id") or "")[:255],
+            "software_fingerprint": fingerprint, "last_seen": stamp, "is_present": True,
+        })
+
+    protection = data.get("endpoint_protection") or {}
+    protection_row = None
+    if isinstance(protection, dict):
+        provider = str(protection.get("provider") or "unknown")[:160]
+        protection_row = {
+            "asset_id": asset_id, "provider": provider,
+            "product_version": str(protection.get("product_version") or "")[:160],
+            "antivirus_enabled": protection.get("antivirus_enabled"),
+            "antispyware_enabled": protection.get("antispyware_enabled"),
+            "real_time_enabled": protection.get("real_time_enabled"),
+            "behavior_monitoring_enabled": protection.get("behavior_monitoring_enabled"),
+            "definitions_version": str(protection.get("definitions_version") or "")[:120],
+            "definitions_updated_at": clean_timestamp(protection.get("definitions_updated_at")),
+            "last_scan_at": clean_timestamp(protection.get("last_scan_at")),
+            "last_scan_type": str(protection.get("last_scan_type") or "")[:40],
+            "last_scan_status": str(protection.get("last_scan_status") or "unknown")[:40],
+            "health_status": str(protection.get("health_status") or "unknown")[:40],
+            "raw_details": {k: v for k, v in protection.items() if k not in {"detections"}},
+            "observed_at": stamp,
+        }
+
+    detections = []
+    for item in (protection.get("detections") if isinstance(protection, dict) else []) or []:
+        if not isinstance(item, dict):
+            continue
+        threat_name = str(item.get("ThreatName") or item.get("threat_name") or "Unclassified detection")[:255]
+        resources = item.get("Resources") or item.get("resources") or []
+        if not isinstance(resources, list):
+            resources = [str(resources)]
+        file_path = str(resources[0] if resources else item.get("file_path") or "")[:1000]
+        detected = clean_timestamp(item.get("InitialDetectionTime") or item.get("detected_at")) or stamp
+        threat_id = str(item.get("ThreatID") or item.get("threat_id") or "")
+        key_source = "|".join((asset_id, threat_id, threat_name, file_path, detected))
+        dedupe_key = hashlib.sha256(key_source.encode("utf-8")).hexdigest()
+        detections.append({
+            "asset_id": asset_id, "detection_source": str(protection.get("provider") or "endpoint-antivirus")[:160],
+            "threat_name": threat_name, "threat_type": "spyware" if any(x in threat_name.lower() for x in ("spy", "keylog", "steal")) else "malware",
+            "severity": "high", "confidence": 0.85, "file_path": file_path,
+            "sha256": None, "action_taken": "action_succeeded" if item.get("ActionSuccess") else "none",
+            "status": "open", "detected_at": detected,
+            "evidence": {"threat_id": threat_id, "resources": resources[:10], "raw": item},
+            "dedupe_key": dedupe_key,
+        })
+
+    listeners = []
+    service_names = {21:"FTP",22:"SSH",23:"Telnet",25:"SMTP",53:"DNS",80:"HTTP",110:"POP3",
+                     135:"MS-RPC",139:"NetBIOS",143:"IMAP",443:"HTTPS",445:"SMB",3389:"RDP",
+                     5432:"PostgreSQL",3306:"MySQL",5985:"WinRM-HTTP",5986:"WinRM-HTTPS",
+                     8080:"HTTP-Alt",8443:"HTTPS-Alt"}
+    for item in (data.get("listening_ports") or [])[:1000]:
+        if not isinstance(item, dict):
+            continue
+        address = clean_ip(item.get("ip_address"))
+        try:
+            port = int(item.get("port"))
+        except (TypeError, ValueError):
+            continue
+        protocol = str(item.get("protocol") or "tcp").lower()
+        if not address or not 1 <= port <= 65535 or protocol not in {"tcp", "udp"}:
+            continue
+        listeners.append({
+            "asset_id": asset_id, "ip_address": address, "protocol": protocol, "port": port,
+            "state": str(item.get("state") or "LISTEN")[:32],
+            "service_name": str(item.get("service_name") or service_names.get(port, "unknown"))[:120],
+            "product": str(item.get("product") or "")[:160], "version": str(item.get("version") or "")[:160],
+            "confidence": 0.8, "source": "endpoint-listener-enumeration",
+            "first_seen": stamp, "last_seen": stamp, "is_current": True,
+        })
+
+    devices = []
+    for item in (data.get("network_discoveries") or [])[:256]:
+        if not isinstance(item, dict):
+            continue
+        address = clean_ip(item.get("ip_address"))
+        cidr = str(item.get("cidr") or "")
+        try:
+            network_obj = validate_network(cidr)
+            if not address or ipaddress.ip_address(address) not in network_obj:
+                continue
+        except ValueError:
+            continue
+        devices.append({
+            "ip_address": address, "network_cidr": str(network_obj),
+            "hostname": str(item.get("hostname") or "")[:255],
+            "mac_address": str(item.get("mac_address") or "")[:64],
+            "vendor": str(item.get("vendor") or "")[:160],
+            "device_type": str(item.get("device_type") or "unknown")[:80],
+            "os_guess": str(item.get("os_guess") or "")[:160],
+            "status": "active", "discovery_method": "agent-icmp",
+            "confidence": 0.65, "authorized_scope": True,
+            "first_seen": stamp, "last_seen": stamp, "last_scan_at": stamp,
+            "metadata": {"source_asset_id": asset_id},
+        })
+
+    try:
+        if network:
+            send_batches("soc_network_connections?on_conflict=asset_id,protocol,local_address,local_port,remote_address,remote_port,state,pid", network)
+        if processes:
+            send_batches("soc_process_observations?on_conflict=asset_id,pid,name,started_at", processes)
+        if software:
+            if data.get("software_inventory_complete") is True:
+                supabase_public_request("software?asset_id=eq." + urllib.parse.quote(asset_id, safe=""), "PATCH", {"is_present": False})
+            send_batches("software?on_conflict=asset_id,software_fingerprint", software)
+        if protection_row:
+            supabase_public_request("soc_endpoint_protection?on_conflict=asset_id,provider", "POST", protection_row)
+        if detections:
+            send_batches("soc_malware_detections?on_conflict=dedupe_key", detections)
+        if listeners:
+            supabase_public_request("soc_listening_ports?asset_id=eq." + urllib.parse.quote(asset_id, safe="") + "&source=eq.endpoint-listener-enumeration", "PATCH", {"is_current": False})
+            send_batches("soc_listening_ports?on_conflict=ip_address,protocol,port", listeners)
+        if devices:
+            send_batches("soc_network_devices?on_conflict=network_cidr,ip_address", devices)
+        if alerts:
+            send_batches("soc_security_alerts?on_conflict=dedupe_key", alerts)
+        return {"status": "ok", "network_connections": len(network), "processes": len(processes),
+                "software": len(software), "listening_ports": len(listeners), "network_devices": len(devices),
+                "antivirus_status": bool(protection_row), "malware_detections": len(detections),
+                "indicative_alerts": len(alerts)}
+    except Exception as exc:
+        return {"status": "error", "stage": "endpoint-telemetry", "message": str(exc)[:500],
+                "network_connections_prepared": len(network), "processes_prepared": len(processes),
+                "software_prepared": len(software), "ports_prepared": len(listeners)}
+
+
 @app.get("/")
 def index(): return FileResponse("app/static/index.html")
 
@@ -268,6 +544,7 @@ def readiness():
     worker_running = bool(task is not None and not task.done())
     checks = {
         "database": "ok" if database_ok else "error",
+        "supabase_soc_storage": "configured" if supabase_public_configured() else "missing_service_role_key",
         "cve_worker": "running" if worker_running else "not-running",
         "last_cve_sync_attempt": last_sync,
         "cve_sync_interval_minutes": max(
@@ -283,17 +560,23 @@ def auth_check(authorization: str|None=Header(default=None)):
 @app.post("/api/agents/enroll")
 async def enroll(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     if not secrets.compare_digest(bearer(authorization) or "", ENROLL): raise HTTPException(403,"Enrollment not authorized")
-    aid=asset_inventory(await request.json()); token=secrets.token_urlsafe(36)
+    initial_data=await request.json()
+    aid=asset_inventory(initial_data)
+    supabase_sync=sync_asset_to_supabase(aid, initial_data)
+    if supabase_sync.get("status")=="ok":
+        supabase_sync=sync_endpoint_telemetry(aid, initial_data)
+    token=secrets.token_urlsafe(36)
     with conn() as c:
         c.execute("INSERT INTO agent_tokens VALUES(?,?)",(hashlib.sha256(token.encode("utf-8")).hexdigest(),aid))
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
     background_tasks.add_task(run_internal_ai, aid)
     audit("agent.enroll", aid, "Nouvel agent enrôlé")
-    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True}
+    return {"asset_id":aid,"agent_token":token,"ai_agent_assigned":True,"supabase_sync":supabase_sync}
 @app.post("/api/agents/heartbeat")
 async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorization:str|None=Header(default=None)):
     aid=require_agent(authorization); data=await request.json(); asset_inventory(data,aid)
+    supabase_sync=sync_asset_to_supabase(aid, data)
     with conn() as c:
         c.execute("INSERT OR IGNORE INTO ai_agents(asset_id,name,status,created_at) VALUES(?,?,?,?)",
                   (aid,"CSVA-AI-"+aid[:8],"active",now()))
@@ -301,19 +584,133 @@ async def heartbeat(request:Request,background_tasks: BackgroundTasks,authorizat
     last=ai_row["last_analysis_at"] if ai_row else None
     due=(not last) or (last < (datetime.now(timezone.utc)-timedelta(minutes=15)).isoformat())
     if due: background_tasks.add_task(run_internal_ai, aid)
-    for entry in data.get("logs",[])[:250]:
+    recent_logs = data.get("logs",[])[:250]
+    for entry in recent_logs:
         ingest_log(aid,entry)
-    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(data.get("logs",[])),250),"ai_analysis_scheduled":due}
+    event_sync = sync_event_logs_to_supabase(aid, recent_logs)
+    ingest_endpoint_telemetry(aid, data)
+    if supabase_sync.get("status")=="ok":
+        supabase_sync=sync_endpoint_telemetry(aid, data)
+    return {"accepted":True,"asset_id":aid,"received_at":now(),"logs_received":min(len(recent_logs),250),"ai_analysis_scheduled":due,"supabase_sync":supabase_sync,"event_sync":event_sync}
+
+def ingest_endpoint_telemetry(asset_id, data):
+    """Persist endpoint connection/process metadata received over the authenticated agent channel."""
+    stamp=now()
+    suspicious=("mimikatz","lazagne","keylogger","njrat","darkcomet","remcos",
+                "asyncrat","nanocore","quasar","xworm","meterpreter","cobaltstrike")
+    with conn() as c:
+        for item in data.get("network_connections",[])[:500]:
+            if not isinstance(item,dict): continue
+            proto=str(item.get("protocol") or "unknown")[:8].lower()
+            local_ip=str(item.get("local_address") or "")[:64]
+            remote_ip=str(item.get("remote_address") or "")[:64]
+            try:
+                local_port=max(0,min(65535,int(item.get("local_port") or 0)))
+                remote_port=max(0,min(65535,int(item.get("remote_port") or 0)))
+                pid=max(0,int(item.get("pid") or 0))
+            except (TypeError,ValueError): continue
+            status=str(item.get("status") or "UNKNOWN")[:32]
+            pname=str(item.get("process_name") or "")[:255]
+            c.execute("""INSERT INTO network_connections(asset_id,protocol,local_address,local_port,
+              remote_address,remote_port,status,pid,process_name,first_seen,last_seen,observations)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,1)
+              ON CONFLICT(asset_id,protocol,local_address,local_port,remote_address,remote_port,status,pid)
+              DO UPDATE SET last_seen=excluded.last_seen,process_name=excluded.process_name,
+              observations=network_connections.observations+1""",
+              (asset_id,proto,local_ip,local_port,remote_ip,remote_port,status,pid,pname,stamp,stamp))
+        for item in data.get("processes",[])[:500]:
+            if not isinstance(item,dict): continue
+            try: pid=max(0,int(item.get("pid") or 0))
+            except (TypeError,ValueError): continue
+            name=str(item.get("name") or "unknown")[:255]
+            exe=str(item.get("executable") or "")[:1000]
+            started=str(item.get("started_at") or "")[:64]
+            c.execute("""INSERT OR IGNORE INTO process_observations
+              (asset_id,pid,name,executable,started_at,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)""",
+              (asset_id,pid,name,exe,started,stamp,stamp))
+            inserted=c.rowcount
+            if not inserted:
+                c.execute("""UPDATE process_observations SET last_seen=?,executable=?
+                  WHERE asset_id=? AND pid=? AND name=? AND started_at=?""",
+                  (stamp,exe,asset_id,pid,name,started))
+            elif any(term in (name+" "+exe).lower() for term in suspicious):
+                c.execute("""INSERT INTO log_findings(asset_id,severity,rule_id,title,details,created_at)
+                  VALUES(?,?,?,?,?,?)""",
+                  (asset_id,"medium","PROC-REVIEW-001","Processus nécessitant une vérification",
+                   "Un nom de processus correspond à un indicateur logiciel à examiner. Ce signal ne confirme pas un malware : vérifier le chemin, la signature, le hash et le contexte.",stamp))
+                c.execute("""INSERT INTO events(asset_id,severity,category,message,created_at,raw)
+                  VALUES(?,?,?,?,?,?)""",
+                  (asset_id,"warning","process-review",f"Processus à examiner : {name} (PID {pid})",stamp,
+                   json.dumps({"pid":pid,"name":name,"executable":exe})[:8000]))
+
+def event_log_fingerprint(asset_id, entry):
+    provider = str(entry.get("provider") or entry.get("source") or "endpoint")[:160].lower()
+    channel = str(entry.get("channel") or "")[:100].lower()
+    record_id = str(entry.get("record_id") or "").strip()
+    event_id = str(entry.get("event_id") or "").strip()
+    message = str(entry.get("message") or "")[:4000]
+    if record_id:
+        material = "|".join((asset_id, provider, channel, record_id))
+    else:
+        material = "|".join((asset_id, provider, channel, event_id, str(entry.get("timestamp") or ""), message))
+    return hashlib.sha256(material.encode("utf-8", "replace")).hexdigest()
+
 
 def ingest_log(asset_id, entry):
-    message=str(entry.get("message",""))[:4000]
-    source=str(entry.get("source","endpoint"))[:100]
-    severity=str(entry.get("severity","info")).lower()
-    stamp=str(entry.get("timestamp") or now())
+    if not isinstance(entry, dict):
+        return False
+    message = str(entry.get("message", ""))[:4000]
+    source = str(entry.get("source", "endpoint"))[:160]
+    severity = str(entry.get("severity", "info")).lower()
+    stamp = str(entry.get("timestamp") or now())
+    try:
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        stamp = parsed.astimezone(timezone.utc).isoformat()
+    except ValueError:
+        stamp = now()
+    fingerprint = event_log_fingerprint(asset_id, entry)
+    raw = json.dumps(entry, ensure_ascii=False)
     with conn() as c:
-        c.execute("INSERT INTO events(asset_id,severity,category,message,created_at,raw) VALUES(?,?,?,?,?,?)",
-                  (asset_id,severity,"endpoint-log",message,stamp,json.dumps(entry)[:8000]))
-    detect_log_patterns(asset_id,message,source)
+        cur = c.execute(
+            "INSERT OR IGNORE INTO events(asset_id,severity,category,message,created_at,raw,event_fingerprint) VALUES(?,?,?,?,?,?,?)",
+            (asset_id, severity, "endpoint-log", message, stamp, raw[:8000], fingerprint)
+        )
+        inserted = cur.rowcount > 0
+    if inserted:
+        detect_log_patterns(asset_id, message, source)
+    return inserted
+
+
+def sync_event_logs_to_supabase(asset_id, entries):
+    if not supabase_public_configured():
+        return {"status": "not-configured", "saved": 0}
+    rows = []
+    for entry in (entries or [])[:250]:
+        if not isinstance(entry, dict):
+            continue
+        stamp = str(entry.get("timestamp") or now())
+        try:
+            parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            stamp = parsed.astimezone(timezone.utc).isoformat()
+        except ValueError:
+            stamp = now()
+        rows.append({
+            "asset_id": asset_id, "severity": str(entry.get("severity") or "info").lower()[:24],
+            "category": "endpoint-log", "message": str(entry.get("message") or "")[:4000],
+            "created_at": stamp, "raw": entry,
+            "event_fingerprint": event_log_fingerprint(asset_id, entry)
+        })
+    try:
+        for offset in range(0, len(rows), 100):
+            supabase_public_request("events?on_conflict=event_fingerprint", "POST", rows[offset:offset + 100])
+        return {"status": "ok", "saved": len(rows)}
+    except Exception as exc:
+        return {"status": "error", "saved": 0, "message": str(exc)[:300]}
+
 
 def detect_log_patterns(asset_id,message,source):
     m=message.lower(); findings=[]
@@ -361,6 +758,49 @@ def events(authorization:str|None=Header(default=None)):
     require_read(authorization)
     with conn() as c: rows=c.execute("SELECT * FROM events ORDER BY id DESC LIMIT 200").fetchall()
     return [dict(r) for r in rows]
+
+@app.get("/api/surveillance/telemetry")
+def surveillance_telemetry(authorization:str|None=Header(default=None)):
+    require_read(authorization)
+    with conn() as c:
+        connections=c.execute("""SELECT n.*,a.hostname FROM network_connections n
+          LEFT JOIN assets a ON a.id=n.asset_id ORDER BY n.last_seen DESC LIMIT 500""").fetchall()
+        processes=c.execute("""SELECT p.*,a.hostname FROM process_observations p
+          LEFT JOIN assets a ON a.id=p.asset_id ORDER BY p.last_seen DESC LIMIT 500""").fetchall()
+        software=c.execute("""SELECT s.*,a.hostname FROM software s
+          LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.collected_at DESC,s.name LIMIT 1000""").fetchall()
+        totals=c.execute("""SELECT COUNT(*) AS total,COUNT(DISTINCT asset_id) AS assets,
+          SUM(CASE WHEN status='ESTABLISHED' THEN 1 ELSE 0 END) AS established
+          FROM network_connections WHERE last_seen>=?""",
+          ((datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat(),)).fetchone()
+    storage="sqlite-fallback"
+    if supabase_public_configured():
+        try:
+            connections=supabase_public_request("soc_network_connections?select=*&order=last_seen.desc&limit=500","GET")
+            processes=supabase_public_request("soc_process_observations?select=*&order=last_seen.desc&limit=500","GET")
+            with conn() as c:
+                hostnames={r["id"]:r["hostname"] for r in c.execute("SELECT id,hostname FROM assets").fetchall()}
+            connections=[{**r,"hostname":hostnames.get(r.get("asset_id"),"")} for r in connections]
+            processes=[{**r,"hostname":hostnames.get(r.get("asset_id"),"")} for r in processes]
+            storage="supabase"
+        except Exception as exc:
+            raise HTTPException(503,"Lecture télémétrie Supabase impossible : "+str(exc)[:300]) from None
+    return {"connections":[dict(x) for x in connections],"processes":[dict(x) for x in processes],
+      "software":[dict(x) for x in software],
+      "summary":{"connections_last_10m":int(totals["total"] or 0),
+      "machines_observed":int(totals["assets"] or 0),"established_last_10m":int(totals["established"] or 0)},
+      "collection":"endpoint connection metadata and process inventory",
+      "storage":storage,"payload_capture":False,"timestamp":now()}
+@app.get("/api/surveillance/alerts")
+def surveillance_alerts(authorization:str|None=Header(default=None)):
+    require_read(authorization)
+    if not supabase_public_configured():
+        raise HTTPException(503,"SUPABASE_SERVICE_ROLE_KEY doit être configurée côté API.")
+    try:
+        return supabase_public_request("soc_security_alerts?select=*&order=updated_at.desc&limit=500","GET")
+    except Exception as exc:
+        raise HTTPException(503,"Lecture des alertes Supabase impossible : "+str(exc)[:300]) from None
+
 @app.get("/api/vulnerabilities")
 def vulnerabilities(severity: str|None=None, vendor: str|None=None, product: str|None=None,
                     cwe: str|None=None, status: str|None=None, kev: bool|None=None,
@@ -478,6 +918,53 @@ def software(authorization:str|None=Header(default=None)):
         rows=c.execute("SELECT s.*,a.hostname FROM software s LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.name").fetchall()
     return [dict(r) for r in rows]
 
+def sync_asset_cves_to_supabase(asset_ids):
+    if not supabase_public_configured():
+        return {"status": "not-configured", "rows": 0}
+    total = 0
+    try:
+        for asset_id in sorted({str(x) for x in asset_ids if x}):
+            with conn() as db:
+                rows = db.execute("SELECT * FROM vulnerabilities WHERE asset_id=? ORDER BY cvss_score DESC, created_at DESC", (asset_id,)).fetchall()
+            payload = []
+            for row in rows:
+                item = dict(row)
+                def parsed_list(key):
+                    try:
+                        value = json.loads(item.get(key) or "[]")
+                        return value if isinstance(value, list) else []
+                    except (ValueError, TypeError):
+                        return []
+                payload.append({
+                    "asset_id": asset_id, "cve_id": item.get("cve_id"),
+                    "severity": item.get("severity") or "unknown", "title": item.get("title") or "",
+                    "status": item.get("status") or "needs-validation",
+                    "source": item.get("source") or "NVD CVE API",
+                    "created_at": item.get("created_at") or now(),
+                    "software_name": item.get("software_name") or "",
+                    "software_version": item.get("software_version") or "",
+                    "vendor": item.get("vendor") or "",
+                    "match_confidence": item.get("match_confidence") or "candidate",
+                    "cve_url": item.get("cve_url") or "",
+                    "cvss_score": item.get("cvss_score"), "cvss_version": item.get("cvss_version") or "",
+                    "cvss_vector": item.get("cvss_vector") or "", "cwe_ids": parsed_list("cwe_ids"),
+                    "cpe_matches": parsed_list("cpe_matches"), "references_json": parsed_list("references_json"),
+                    "epss_score": item.get("epss_score"), "epss_percentile": item.get("epss_percentile"),
+                    "known_exploited": bool(item.get("known_exploited")),
+                    "published_at": item.get("published_at") or None,
+                    "last_modified_at": item.get("last_modified_at") or None,
+                    "sources_json": parsed_list("sources_json"), "ssvc_json": parsed_list("ssvc_json"),
+                    "affected_json": parsed_list("affected_json"), "assigned_to": item.get("assigned_to") or "",
+                    "tags": parsed_list("tags_json")
+                })
+            for offset in range(0, len(payload), 100):
+                supabase_public_request("vulnerabilities?on_conflict=asset_id,cve_id", "POST", payload[offset:offset + 100])
+            total += len(payload)
+        return {"status": "ok", "rows": total}
+    except Exception as exc:
+        return {"status": "error", "rows": total, "message": str(exc)[:350]}
+
+
 def _run_cve_sync_locked(limit=25):
     with conn() as c:
         settings=c.execute("SELECT value FROM system_settings WHERE key='cve_scan_offset'").fetchone()
@@ -546,8 +1033,9 @@ def _run_cve_sync_locked(limit=25):
         next_offset=0 if offset+len(products)>=total else offset+len(products)
         c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('cve_scan_offset',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(str(next_offset),now()))
         c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('last_cve_sync',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(now(),now()))
+    supabase_cve_sync = sync_asset_cves_to_supabase([p["asset_id"] for p in products])
     return {'software_checked':checked,'software_total':total,'candidate_records_added':added,'records_refreshed':refreshed,
-      'version_range_matches':matched,'errors':errors,'last_sync':now(),
+      'version_range_matches':matched,'errors':errors,'last_sync':now(),'supabase_cve_sync':supabase_cve_sync,
       'warning':'Une correspondance CPE/version reste un candidat à valider, pas une preuve d’exposition. Vérifier l’édition, les correctifs rétroportés et l’avis éditeur.'}
 
 _CVE_SYNC_LOCK = threading.Lock()
@@ -619,6 +1107,209 @@ async def run_network_discovery(request: Request, authorization: str | None = He
         "hosts": results,
         "limitation": "Découverte ICMP ponctuelle uniquement. Les hôtes qui bloquent le ping peuvent être absents. Aucun agent n'est installé et aucun équipement n'est enrôlé automatiquement.",
     }
+
+
+@app.get("/api/surveillance/attack-surface")
+def surveillance_attack_surface(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    if not supabase_public_configured():
+        raise HTTPException(503, "Stockage SOC Supabase non configuré côté API.")
+    try:
+        devices = supabase_public_request("soc_network_devices?select=*&order=last_seen.desc&limit=1000", "GET")
+        ports = supabase_public_request("soc_listening_ports?select=*&is_current=eq.true&order=last_seen.desc&limit=3000", "GET")
+        protection = supabase_public_request("soc_endpoint_protection?select=*&order=observed_at.desc&limit=1000", "GET")
+        malware = supabase_public_request("soc_malware_detections?select=*&order=detected_at.desc&limit=1000", "GET")
+        software = supabase_public_request("software?select=*&is_present=eq.true&order=last_seen.desc&limit=3000", "GET")
+        vulnerabilities = supabase_public_request("vulnerabilities?select=*&order=cvss_score.desc&limit=3000", "GET")
+        assets = supabase_public_request("assets?select=id,hostname,platform,ip_addresses,os_install_date,os_install_date_source,last_seen&limit=1000", "GET")
+        asset_names = {x.get("id"): x.get("hostname") for x in assets}
+        for row in ports:
+            row["hostname"] = asset_names.get(row.get("asset_id"), "")
+        for collection in (protection, malware, software):
+            for row in collection:
+                row["hostname"] = asset_names.get(row.get("asset_id"), "")
+        return {
+            "devices": devices, "ports": ports, "endpoint_protection": protection,
+            "malware_detections": malware, "software": software,
+            "vulnerabilities": vulnerabilities, "assets": assets,
+            "storage": "supabase", "timestamp": now()
+        }
+    except Exception as exc:
+        raise HTTPException(503, "Lecture de la surface d'attaque Supabase impossible : " + str(exc)[:350]) from None
+
+
+@app.post("/api/network/attack-surface-scan")
+async def run_attack_surface_scan(request: Request, authorization: str | None = Header(default=None)):
+    actor = require_analyst(authorization)
+    if not supabase_public_configured():
+        raise HTTPException(503, "SUPABASE_SERVICE_ROLE_KEY doit être configurée côté API.")
+    data = await request.json()
+    cidr = str(data.get("cidr") or "").strip()
+    try:
+        network = validate_network(cidr)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    stamp = now()
+    run_row = supabase_public_request("soc_scan_runs", "POST", {
+        "scan_type": "port_scan", "target": str(network), "status": "running",
+        "started_by": actor, "started_at": stamp, "metadata": {"scope": "authorized_private_lan", "scanner": "Congo Sec Vision"}
+    })
+    scan_id = run_row[0]["id"] if isinstance(run_row, list) and run_row else None
+    try:
+        try:
+            ping_hosts = discover_network(str(network))
+        except Exception:
+            ping_hosts = []
+        scan = scan_network_ports(str(network))
+        host_map = {x["ip_address"]: {"ip_address": x["ip_address"], "hostname": x.get("hostname", ""), "open_ports": []}
+                    for x in ping_hosts}
+        for item in scan["hosts"]:
+            host_map.setdefault(item["ip_address"], item)
+            if item.get("hostname"):
+                host_map[item["ip_address"]]["hostname"] = item["hostname"]
+            host_map[item["ip_address"]]["open_ports"] = item.get("open_ports", [])
+        hosts = sorted(host_map.values(), key=lambda x: ipaddress.ip_address(x["ip_address"]))
+
+        asset_by_ip = {}
+        with conn() as db:
+            for row in db.execute("SELECT id,ip_addresses FROM assets").fetchall():
+                try:
+                    addresses = json.loads(row["ip_addresses"] or "[]")
+                except (TypeError, ValueError):
+                    addresses = []
+                for address in addresses:
+                    value = address.get("address") if isinstance(address, dict) else address
+                    clean = str(value or "").split("%", 1)[0]
+                    if clean:
+                        asset_by_ip[clean] = row["id"]
+
+        supabase_public_request(
+            "soc_network_devices?network_cidr=eq." + urllib.parse.quote(str(network), safe=""),
+            "PATCH", {"status": "inactive"}
+        )
+        port_range_filter = "and=" + urllib.parse.quote(
+            "(ip_address.gte." + str(network.network_address) + ",ip_address.lte." + str(network.broadcast_address) + ")",
+            safe=""
+        )
+        supabase_public_request("soc_listening_ports?" + port_range_filter + "&source=eq.authorized-network-tcp-scan", "PATCH", {"is_current": False})
+        device_payload = []
+        for host in hosts:
+            opened = host.get("open_ports") or []
+            device_payload.append({
+                "ip_address": host["ip_address"], "network_cidr": str(network),
+                "hostname": str(host.get("hostname") or "")[:255],
+                "device_type": "server" if any(p["port"] in (22, 80, 443, 445, 3389, 5432, 3306) for p in opened) else "unknown",
+                "status": "active", "discovery_method": "icmp+authorized-tcp-scan",
+                "confidence": 0.9 if opened else 0.65, "authorized_scope": True,
+                "first_seen": stamp, "last_seen": stamp, "last_scan_at": stamp,
+                "metadata": {"open_ports_count": len(opened), "scan_id": scan_id, "source": "network-scan"}
+            })
+        saved_devices = []
+        if device_payload:
+            saved_devices = supabase_public_request(
+                "soc_network_devices?on_conflict=network_cidr,ip_address", "POST", device_payload
+            )
+        device_ids = {str(x.get("ip_address")): x.get("id") for x in (saved_devices or [])}
+        if len(device_ids) < len(device_payload):
+            rows = supabase_public_request(
+                "soc_network_devices?select=id,ip_address&network_cidr=eq." + urllib.parse.quote(str(network), safe=""),
+                "GET"
+            )
+            device_ids.update({str(x.get("ip_address")): x.get("id") for x in rows})
+
+        port_payload = []
+        for host in hosts:
+            ip = host["ip_address"]
+            for port in host.get("open_ports") or []:
+                port_payload.append({
+                    "network_device_id": device_ids.get(ip), "asset_id": asset_by_ip.get(ip),
+                    "scan_run_id": scan_id, "ip_address": ip, "protocol": "tcp",
+                    "port": int(port["port"]), "state": "open",
+                    "service_name": str(port.get("service_name") or "")[:120],
+                    "product": str(port.get("product") or "")[:160],
+                    "version": str(port.get("version") or "")[:160],
+                    "banner": str(port.get("banner") or "")[:512],
+                    "confidence": float(port.get("confidence") or 0.75), "is_current": True,
+                    "source": "authorized-network-tcp-scan", "first_seen": stamp, "last_seen": stamp
+                })
+        if port_payload:
+            for offset in range(0, len(port_payload), 200):
+                supabase_public_request(
+                    "soc_listening_ports?on_conflict=ip_address,protocol,port", "POST",
+                    port_payload[offset:offset + 200]
+                )
+
+        cve_rows = []
+        product_cache = set()
+        service_vendor = {
+            "openssh": "OpenBSD", "apache http server": "Apache Software Foundation",
+            "nginx": "F5", "microsoft iis": "Microsoft", "vsftpd": "Chris Evans",
+            "proftpd": "ProFTPD Project"
+        }
+        for host in hosts:
+            for port in host.get("open_ports") or []:
+                product = str(port.get("product") or "").strip()
+                version = str(port.get("version") or "").strip()
+                if not product or not version:
+                    continue
+                vendor = next((v for k, v in service_vendor.items() if k in product.lower()), "")
+                cache_key = (product.lower(), version, vendor.lower())
+                if cache_key in product_cache or len(product_cache) >= 8:
+                    continue
+                product_cache.add(cache_key)
+                try:
+                    matches = scan_product(product, version, vendor, NVD_API_KEY)
+                except Exception:
+                    continue
+                for match in matches[:30]:
+                    cve_rows.append({
+                        "asset_id": asset_by_ip.get(host["ip_address"]),
+                        "network_device_id": device_ids.get(host["ip_address"]),
+                        "ip_address": host["ip_address"], "port": int(port["port"]),
+                        "service_name": str(port.get("service_name") or ""),
+                        "cve_id": match.get("cve_id"), "severity": match.get("severity") or "unknown",
+                        "title": match.get("title") or "", "status": "needs-validation",
+                        "source": "NVD service-version candidate", "created_at": stamp,
+                        "software_name": product, "software_version": version, "vendor": vendor,
+                        "match_confidence": match.get("match_confidence") or "candidate",
+                        "cve_url": match.get("cve_url") or "",
+                        "cvss_score": match.get("cvss_score"), "cvss_version": match.get("cvss_version") or "",
+                        "cvss_vector": match.get("cvss_vector") or "", "cwe_ids": match.get("cwe_ids") or [],
+                        "epss_score": match.get("epss_score"), "epss_percentile": match.get("epss_percentile"),
+                        "known_exploited": bool(match.get("known_exploited")),
+                        "published_at": match.get("published"), "last_modified_at": match.get("last_modified"),
+                        "cpe_matches": match.get("cpe_matches") or [], "references_json": match.get("references") or [],
+                        "affected_json": match.get("affected") or [], "sources_json": match.get("sources") or [],
+                        "ssvc_json": match.get("ssvc") or []
+                    })
+        if cve_rows:
+            for offset in range(0, len(cve_rows), 100):
+                supabase_public_request(
+                    "vulnerabilities?on_conflict=network_device_id,cve_id", "POST", cve_rows[offset:offset + 100]
+                )
+
+        summary = {
+            "targets_checked": scan["targets_checked"], "hosts_discovered": len(hosts),
+            "hosts_with_open_ports": scan["hosts_with_open_ports"], "open_ports": len(port_payload),
+            "versioned_services": len(product_cache), "cve_candidates": len(cve_rows),
+            "ping_discovered": len(ping_hosts), "protocol": "TCP"
+        }
+        if scan_id:
+            supabase_public_request("soc_scan_runs?id=eq." + str(scan_id), "PATCH", {
+                "status": "completed", "completed_at": now(), "summary": summary
+            })
+        audit("network.attack_surface_scan", str(network), json.dumps(summary, ensure_ascii=False), actor)
+        return {"scan_id": scan_id, "network": str(network), "summary": summary,
+                "hosts": hosts, "limitations": scan["limitations"]}
+    except Exception as exc:
+        if scan_id:
+            try:
+                supabase_public_request("soc_scan_runs?id=eq." + str(scan_id), "PATCH", {
+                    "status": "failed", "completed_at": now(), "summary": {"error": str(exc)[:300]}
+                })
+            except Exception:
+                pass
+        raise HTTPException(502, "Scan réseau interrompu : " + str(exc)[:300]) from None
 
 
 @app.get("/api/network/discovery")
@@ -1379,4 +2070,4 @@ def check_hypervisor_providers(authorization: str | None = Header(default=None))
 @app.get("/api/security/status")
 def security_status(authorization: str|None=Header(default=None)):
     require_admin(authorization)
-    return {"authentication":"Supabase Auth session validated server-side","database":"SQLite for legacy SOC modules; Supabase PostgreSQL for hypervisor inventory; full migration pending","tls":"HTTPS reverse-proxy required for deployment","mfa":"not-enforced; Supabase MFA/AAL2 integration pending","rbac":"server-enforced app_metadata roles: admin, analyst, viewer, incident_responder","rate_limiting":"not-configured","remediation":"approval-only; no remote execution","agent_tokens":"SHA-256 digests at rest; rotation workflow pending","agent_enrollment":"shared bootstrap token; protect and rotate before production","mode":"laboratory","production_ready":False}
+    return {"authentication":"Supabase Auth session validated server-side","database":"Supabase PostgreSQL for SOC endpoint telemetry and hypervisor inventory; SQLite retained for legacy modules pending migration","tls":"HTTPS reverse-proxy required for deployment","mfa":"not-enforced; Supabase MFA/AAL2 integration pending","rbac":"server-enforced app_metadata roles: admin, analyst, viewer, incident_responder","rate_limiting":"not-configured","remediation":"approval-only; no remote execution","agent_tokens":"SHA-256 digests at rest; rotation workflow pending","agent_enrollment":"shared bootstrap token; protect and rotate before production","mode":"laboratory","soc_telemetry_supabase":supabase_public_configured(),"production_ready":False}
