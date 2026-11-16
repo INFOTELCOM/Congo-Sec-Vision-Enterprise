@@ -20,10 +20,5 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Compile backend and agent
         run: python -m compileall -q app agent
-      - name: Run backend tests when present
-        run: |
-          if [ -d tests ]; then
-            pytest -q
-          else
-            echo 'No tests directory found; syntax validation completed.'
-          fi
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
