@@ -263,13 +263,16 @@ def sync_asset_to_supabase(asset_id, data):
     if not supabase_public_configured():
         return {"status":"not-configured","message":"SUPABASE_SERVICE_ROLE_KEY is not configured on the API server."}
     stamp=now()
+    with conn() as db:
+        asset_row=db.execute("SELECT first_seen FROM assets WHERE id=?",(asset_id,)).fetchone()
+    first_seen=asset_row["first_seen"] if asset_row else stamp
     payload={
         "id":asset_id,
         "hostname":str(data.get("hostname") or "unknown")[:255],
         "platform":str(data.get("platform") or "unknown")[:80],
         "ip_addresses":data.get("ip_addresses",[]),
         "inventory":data,
-        "first_seen":stamp,
+        "first_seen":first_seen,
         "last_seen":stamp,
     }
     try:
