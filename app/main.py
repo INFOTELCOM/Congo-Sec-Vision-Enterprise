@@ -555,12 +555,34 @@ def surveillance_telemetry(authorization:str|None=Header(default=None)):
           SUM(CASE WHEN status='ESTABLISHED' THEN 1 ELSE 0 END) AS established
           FROM network_connections WHERE last_seen>=?""",
           ((datetime.now(timezone.utc)-timedelta(minutes=10)).isoformat(),)).fetchone()
+    storage="sqlite-fallback"
+    if supabase_public_configured():
+        try:
+            connections=supabase_public_request("soc_network_connections?select=*&order=last_seen.desc&limit=500","GET")
+            processes=supabase_public_request("soc_process_observations?select=*&order=last_seen.desc&limit=500","GET")
+            with conn() as c:
+                hostnames={r["id"]:r["hostname"] for r in c.execute("SELECT id,hostname FROM assets").fetchall()}
+            connections=[{**r,"hostname":hostnames.get(r.get("asset_id"),"")} for r in connections]
+            processes=[{**r,"hostname":hostnames.get(r.get("asset_id"),"")} for r in processes]
+            storage="supabase"
+        except Exception as exc:
+            raise HTTPException(503,"Lecture télémétrie Supabase impossible : "+str(exc)[:300]) from None
     return {"connections":[dict(x) for x in connections],"processes":[dict(x) for x in processes],
       "software":[dict(x) for x in software],
       "summary":{"connections_last_10m":int(totals["total"] or 0),
       "machines_observed":int(totals["assets"] or 0),"established_last_10m":int(totals["established"] or 0)},
       "collection":"endpoint connection metadata and process inventory",
-      "payload_capture":False,"timestamp":now()}
+      "storage":storage,"payload_capture":False,"timestamp":now()}
+@app.get("/api/surveillance/alerts")
+def surveillance_alerts(authorization:str|None=Header(default=None)):
+    require_read(authorization)
+    if not supabase_public_configured():
+        raise HTTPException(503,"SUPABASE_SERVICE_ROLE_KEY doit être configurée côté API.")
+    try:
+        return supabase_public_request("soc_security_alerts?select=*&order=updated_at.desc&limit=500","GET")
+    except Exception as exc:
+        raise HTTPException(503,"Lecture des alertes Supabase impossible : "+str(exc)[:300]) from None
+
 @app.get("/api/vulnerabilities")
 def vulnerabilities(severity: str|None=None, vendor: str|None=None, product: str|None=None,
                     cwe: str|None=None, status: str|None=None, kev: bool|None=None,
