@@ -392,7 +392,7 @@ def sync_endpoint_telemetry(asset_id, data):
             "collected_at": stamp, "installed_at": clean_timestamp(installed),
             "install_location": location, "install_scope": str(item.get("install_scope") or "")[:40],
             "package_id": str(item.get("package_id") or "")[:255],
-            "software_fingerprint": fingerprint, "last_seen": stamp,
+            "software_fingerprint": fingerprint, "last_seen": stamp, "is_present": True,
         })
 
     protection = data.get("endpoint_protection") or {}
@@ -461,7 +461,7 @@ def sync_endpoint_telemetry(asset_id, data):
             "service_name": str(item.get("service_name") or service_names.get(port, "unknown"))[:120],
             "product": str(item.get("product") or "")[:160], "version": str(item.get("version") or "")[:160],
             "confidence": 0.8, "source": "endpoint-listener-enumeration",
-            "first_seen": stamp, "last_seen": stamp,
+            "first_seen": stamp, "last_seen": stamp, "is_current": True,
         })
 
     devices = []
@@ -495,12 +495,14 @@ def sync_endpoint_telemetry(asset_id, data):
         if processes:
             send_batches("soc_process_observations?on_conflict=asset_id,pid,name,started_at", processes)
         if software:
+            supabase_public_request("software?asset_id=eq." + urllib.parse.quote(asset_id, safe=""), "PATCH", {"is_present": False})
             send_batches("software?on_conflict=asset_id,software_fingerprint", software)
         if protection_row:
             supabase_public_request("soc_endpoint_protection?on_conflict=asset_id,provider", "POST", protection_row)
         if detections:
             send_batches("soc_malware_detections?on_conflict=dedupe_key", detections)
         if listeners:
+            supabase_public_request("soc_listening_ports?asset_id=eq." + urllib.parse.quote(asset_id, safe=""), "PATCH", {"is_current": False})
             send_batches("soc_listening_ports?on_conflict=ip_address,protocol,port", listeners)
         if devices:
             send_batches("soc_network_devices?on_conflict=network_cidr,ip_address", devices)
@@ -1113,10 +1115,10 @@ def surveillance_attack_surface(authorization: str | None = Header(default=None)
         raise HTTPException(503, "Stockage SOC Supabase non configuré côté API.")
     try:
         devices = supabase_public_request("soc_network_devices?select=*&order=last_seen.desc&limit=1000", "GET")
-        ports = supabase_public_request("soc_listening_ports?select=*&order=last_seen.desc&limit=3000", "GET")
+        ports = supabase_public_request("soc_listening_ports?select=*&is_current=eq.true&order=last_seen.desc&limit=3000", "GET")
         protection = supabase_public_request("soc_endpoint_protection?select=*&order=observed_at.desc&limit=1000", "GET")
         malware = supabase_public_request("soc_malware_detections?select=*&order=detected_at.desc&limit=1000", "GET")
-        software = supabase_public_request("software?select=*&order=last_seen.desc&limit=3000", "GET")
+        software = supabase_public_request("software?select=*&is_present=eq.true&order=last_seen.desc&limit=3000", "GET")
         vulnerabilities = supabase_public_request("vulnerabilities?select=*&order=cvss_score.desc&limit=3000", "GET")
         assets = supabase_public_request("assets?select=id,hostname,platform,ip_addresses,os_install_date,os_install_date_source,last_seen&limit=1000", "GET")
         asset_names = {x.get("id"): x.get("hostname") for x in assets}
@@ -1180,6 +1182,15 @@ async def run_attack_surface_scan(request: Request, authorization: str | None = 
                     if clean:
                         asset_by_ip[clean] = row["id"]
 
+        supabase_public_request(
+            "soc_network_devices?network_cidr=eq." + urllib.parse.quote(str(network), safe=""),
+            "PATCH", {"status": "inactive"}
+        )
+        supabase_public_request(
+            "soc_listening_ports?ip_address=gte." + urllib.parse.quote(str(network.network_address), safe="") +
+            "&ip_address=lte." + urllib.parse.quote(str(network.broadcast_address), safe=""),
+            "PATCH", {"is_current": False}
+        )
         device_payload = []
         for host in hosts:
             opened = host.get("open_ports") or []
@@ -1217,7 +1228,7 @@ async def run_attack_surface_scan(request: Request, authorization: str | None = 
                     "product": str(port.get("product") or "")[:160],
                     "version": str(port.get("version") or "")[:160],
                     "banner": str(port.get("banner") or "")[:512],
-                    "confidence": float(port.get("confidence") or 0.75),
+                    "confidence": float(port.get("confidence") or 0.75), "is_current": True,
                     "source": "authorized-network-tcp-scan", "first_seen": stamp, "last_seen": stamp
                 })
         if port_payload:
