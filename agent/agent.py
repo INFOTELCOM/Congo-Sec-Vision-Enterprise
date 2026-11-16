@@ -52,27 +52,150 @@ def discover_connected_networks(force=False):
     return discovered
 
 
-def software_inventory():
-    items=[]
-    if platform.system()=="Windows":
-        script="Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*,HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | Where-Object DisplayName | Select-Object -First 300 DisplayName,DisplayVersion,Publisher | ConvertTo-Json -Compress"
-        raw=run(["powershell","-NoProfile","-NonInteractive","-Command",script],20)
+def os_installation_info():
+    """Return an installation date only when the OS exposes a defensible source."""
+    if platform.system() == "Windows":
+        script = "$o=Get-CimInstance Win32_OperatingSystem; [pscustomobject]@{InstallDate=$o.InstallDate.ToUniversalTime().ToString('o')} | ConvertTo-Json -Compress"
+        raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 12)
         try:
-            data=json.loads(raw or "[]")
-            if isinstance(data,dict): data=[data]
-            for x in data: items.append({"name":x.get("DisplayName",""),"version":x.get("DisplayVersion",""),"vendor":x.get("Publisher","")})
-        except Exception: pass
+            value = json.loads(raw or "{}").get("InstallDate")
+            if value:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                return {"date": parsed.date().isoformat(), "source": "Win32_OperatingSystem.InstallDate", "confidence": 0.85}
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return {"date": None, "source": "unavailable", "confidence": 0.0}
+    if platform.system() == "Linux":
+        candidates = ("/var/log/installer/initial-status.gz", "/var/log/installer/lsb-release")
+        for candidate in candidates:
+            try:
+                value = run(["stat", "-c", "%w", candidate], 4).strip()
+                if value and value != "-":
+                    parsed = datetime.fromisoformat(value.replace(" ", "T").split(".")[0])
+                    return {"date": parsed.date().isoformat(), "source": "installer-file-birthtime", "confidence": 0.55}
+            except (OSError, ValueError):
+                continue
+    return {"date": None, "source": "unavailable", "confidence": 0.0}
+
+
+def software_inventory():
+    items = []
+    if platform.system() == "Windows":
+        script = "Get-ItemProperty HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*,HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\* | Where-Object DisplayName | Select-Object -First 500 DisplayName,DisplayVersion,Publisher,InstallDate,InstallLocation,PSChildName | ConvertTo-Json -Compress"
+        raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 25)
+        try:
+            data = json.loads(raw or "[]")
+            if isinstance(data, dict):
+                data = [data]
+            for x in data:
+                raw_date = str(x.get("InstallDate") or "").strip()
+                installed_at = ""
+                if len(raw_date) == 8 and raw_date.isdigit():
+                    try:
+                        installed_at = datetime.strptime(raw_date, "%Y%m%d").date().isoformat()
+                    except ValueError:
+                        pass
+                items.append({
+                    "name": x.get("DisplayName", ""), "version": x.get("DisplayVersion", ""),
+                    "vendor": x.get("Publisher", ""), "installed_at": installed_at,
+                    "install_location": x.get("InstallLocation", "") or "",
+                    "install_scope": "machine", "package_id": x.get("PSChildName", "") or ""
+                })
+        except (ValueError, TypeError):
+            pass
     elif shutil.which("dpkg-query"):
-        raw=run(["dpkg-query","-W","-f=${binary:Package}\\t${Version}\\t${Maintainer}\\n"],20)
-        for line in raw.splitlines()[:1000]:
-            p=line.split("\t")
-            if len(p)>=2: items.append({"name":p[0],"version":p[1],"vendor":p[2] if len(p)>2 else ""})
+        raw = run(["dpkg-query", "-W", "-f=\${binary:Package}\\\\t\${Version}\\\\t\${Maintainer}\\\\n"], 25)
+        for line in raw.splitlines()[:1500]:
+            p = line.split("\\\\t")
+            if len(p) >= 2:
+                items.append({"name": p[0], "version": p[1], "vendor": p[2] if len(p) > 2 else "",
+                              "installed_at": "", "install_location": "", "install_scope": "system",
+                              "package_id": p[0]})
     elif shutil.which("rpm"):
-        raw=run(["rpm","-qa","--qf","%{NAME}\\t%{VERSION}-%{RELEASE}\\t%{VENDOR}\\n"],20)
-        for line in raw.splitlines()[:1000]:
-            p=line.split("\t")
-            if len(p)>=2: items.append({"name":p[0],"version":p[1],"vendor":p[2] if len(p)>2 else ""})
+        raw = run(["rpm", "-qa", "--qf", "%{NAME}\\\\t%{VERSION}-%{RELEASE}\\\\t%{VENDOR}\\\\t%{INSTALLTIME:date}\\\\n"], 25)
+        for line in raw.splitlines()[:1500]:
+            p = line.split("\\\\t")
+            if len(p) >= 2:
+                installed_at = ""
+                if len(p) > 3:
+                    try:
+                        installed_at = datetime.strptime(p[3].strip(), "%a %b %d %H:%M:%S %Y").date().isoformat()
+                    except ValueError:
+                        pass
+                items.append({"name": p[0], "version": p[1], "vendor": p[2] if len(p) > 2 else "",
+                              "installed_at": installed_at, "install_location": "", "install_scope": "system",
+                              "package_id": p[0]})
     return items
+
+
+def endpoint_protection():
+    """Collect native protection state; never claim a clean scan when none was run."""
+    if platform.system() == "Windows":
+        script = "$s=Get-MpComputerStatus -ErrorAction SilentlyContinue; $d=@(Get-MpThreatDetection -ErrorAction SilentlyContinue | Select-Object ThreatID,ThreatName,InitialDetectionTime,ActionSuccess,Resources); $p=@(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue | Select-Object displayName,pathToSignedProductExe,productState); [pscustomobject]@{Defender=if($s){[pscustomobject]@{AntivirusEnabled=$s.AntivirusEnabled;AntispywareEnabled=$s.AntispywareEnabled;RealTimeProtectionEnabled=$s.RealTimeProtectionEnabled;BehaviorMonitorEnabled=$s.BehaviorMonitorEnabled;SignatureVersion=$s.AntivirusSignatureVersion;SignatureUpdated=$s.AntivirusSignatureLastUpdated;QuickScanEndTime=$s.QuickScanEndTime;FullScanEndTime=$s.FullScanEndTime}}else{$null};Products=$p;Detections=$d} | ConvertTo-Json -Depth 5 -Compress"
+        raw = run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], 20)
+        try:
+            data = json.loads(raw or "{}")
+            defender = data.get("Defender") or {}
+            products = data.get("Products") or []
+            detections = data.get("Detections") or []
+            if isinstance(products, dict): products = [products]
+            if isinstance(detections, dict): detections = [detections]
+            return {
+                "provider": "Microsoft Defender" if defender else "Windows Security Center",
+                "antivirus_enabled": defender.get("AntivirusEnabled"),
+                "antispyware_enabled": defender.get("AntispywareEnabled"),
+                "real_time_enabled": defender.get("RealTimeProtectionEnabled"),
+                "behavior_monitoring_enabled": defender.get("BehaviorMonitorEnabled"),
+                "definitions_version": str(defender.get("SignatureVersion") or ""),
+                "definitions_updated_at": str(defender.get("SignatureUpdated") or ""),
+                "last_scan_at": str(defender.get("FullScanEndTime") or defender.get("QuickScanEndTime") or ""),
+                "last_scan_type": "full" if defender.get("FullScanEndTime") else ("quick" if defender.get("QuickScanEndTime") else ""),
+                "health_status": "protected" if defender.get("AntivirusEnabled") and defender.get("RealTimeProtectionEnabled") else ("at_risk" if defender else "unknown"),
+                "products": products[:20], "detections": detections[:100],
+                "collection_source": "Windows Defender / SecurityCenter2"
+            }
+        except (ValueError, TypeError, AttributeError):
+            return {"provider": "Windows Security", "health_status": "unknown", "detections": [], "collection_source": "powershell_unavailable"}
+    if platform.system() == "Linux":
+        if shutil.which("clamscan") or shutil.which("clamdscan"):
+            binary = shutil.which("clamdscan") or shutil.which("clamscan")
+            version = run([binary, "--version"], 5).strip()[:160]
+            return {"provider": "ClamAV", "health_status": "installed_not_scanned", "product_version": version,
+                    "antivirus_enabled": None, "antispyware_enabled": None, "real_time_enabled": None,
+                    "detections": [], "collection_source": "clamav_binary"}
+    return {"provider": "not_detected", "health_status": "unknown", "detections": [], "collection_source": "native_inventory"}
+
+
+def collect_listening_ports():
+    """Collect ports listening locally on this endpoint, distinct from remote network scans."""
+    items = []
+    try:
+        connections = psutil.net_connections(kind="inet")
+    except (psutil.AccessDenied, OSError):
+        connections = []
+    for c in connections[:1000]:
+        try:
+            if not c.laddr:
+                continue
+            is_tcp = c.type == socket.SOCK_STREAM
+            if is_tcp and c.status != psutil.CONN_LISTEN:
+                continue
+            if not is_tcp and c.raddr:
+                continue
+            pname = ""
+            if c.pid:
+                try:
+                    pname = psutil.Process(c.pid).name()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            items.append({"protocol": "tcp" if is_tcp else "udp", "ip_address": c.laddr.ip,
+                          "port": int(c.laddr.port), "state": "LISTEN" if is_tcp else "BOUND",
+                          "pid": int(c.pid or 0), "process_name": pname[:255]})
+        except (AttributeError, OSError, ValueError):
+            continue
+    return items
+
+
 def collect_logs():
     logs=[]
     if platform.system()=="Windows":
@@ -194,9 +317,10 @@ def collect():
       "cpu_percent":psutil.cpu_percent(interval=1),"memory_percent":vm.percent,"disk_percent":disk.percent,
       "ip_addresses":[{"interface":x["interface"],"address":x["address"]} for x in local_interfaces()],
       "interfaces":local_interfaces(),"network_discoveries":discover_connected_networks(),
-      "software":software_inventory(),"logs":collect_logs(),
+      "os_installation":os_installation_info(),"software":software_inventory(),"logs":collect_logs(),
+      "endpoint_protection":endpoint_protection(),"listening_ports":collect_listening_ports(),
       "network_connections":collect_network_connections(),"processes":collect_processes(),
-      "virtualization":detect_virtualization(),"agent_version":"0.2.0","collected_at":datetime.now(timezone.utc).isoformat()}
+      "virtualization":detect_virtualization(),"agent_version":"0.3.0","collected_at":datetime.now(timezone.utc).isoformat()}
 def post(url,payload,token=None):
     req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={"Content-Type":"application/json",**({"Authorization":"Bearer "+token} if token else {})},method="POST")
     with urllib.request.urlopen(req,timeout=45) as r: return json.loads(r.read().decode())
