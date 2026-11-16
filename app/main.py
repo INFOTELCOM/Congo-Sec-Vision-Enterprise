@@ -10,6 +10,7 @@ from app.authz import get_user_roles
 from app.hypervisors import HypervisorError, configured_providers, inventory as collect_hypervisor_inventory
 from app.hypervisor_lab import lab_inventory as get_hypervisor_lab_inventory
 from app.network_discovery import discover_network, validate_network
+from app.port_scanner import scan_network_ports
 from app.opencve import OpenCVEError, check_connection as check_opencve_connection, search_cves as search_opencve_cves, get_cve as get_opencve_cve, get_cve_changes as get_opencve_changes
 from app.soc_storage import supabase_public_request, supabase_public_configured
 
@@ -992,6 +993,200 @@ async def run_network_discovery(request: Request, authorization: str | None = He
         "hosts": results,
         "limitation": "Découverte ICMP ponctuelle uniquement. Les hôtes qui bloquent le ping peuvent être absents. Aucun agent n'est installé et aucun équipement n'est enrôlé automatiquement.",
     }
+
+
+@app.get("/api/surveillance/attack-surface")
+def surveillance_attack_surface(authorization: str | None = Header(default=None)):
+    require_read(authorization)
+    if not supabase_public_configured():
+        raise HTTPException(503, "Stockage SOC Supabase non configuré côté API.")
+    try:
+        devices = supabase_public_request("soc_network_devices?select=*&order=last_seen.desc&limit=1000", "GET")
+        ports = supabase_public_request("soc_listening_ports?select=*&order=last_seen.desc&limit=3000", "GET")
+        protection = supabase_public_request("soc_endpoint_protection?select=*&order=observed_at.desc&limit=1000", "GET")
+        malware = supabase_public_request("soc_malware_detections?select=*&order=detected_at.desc&limit=1000", "GET")
+        software = supabase_public_request("software?select=*&order=last_seen.desc&limit=3000", "GET")
+        vulnerabilities = supabase_public_request("vulnerabilities?select=*&network_device_id=not.is.null&order=cvss_score.desc&limit=2000", "GET")
+        assets = supabase_public_request("assets?select=id,hostname,platform,ip_addresses,os_install_date,os_install_date_source,last_seen&limit=1000", "GET")
+        asset_names = {x.get("id"): x.get("hostname") for x in assets}
+        for row in ports:
+            row["hostname"] = asset_names.get(row.get("asset_id"), "")
+        for collection in (protection, malware, software):
+            for row in collection:
+                row["hostname"] = asset_names.get(row.get("asset_id"), "")
+        return {
+            "devices": devices, "ports": ports, "endpoint_protection": protection,
+            "malware_detections": malware, "software": software,
+            "vulnerabilities": vulnerabilities, "assets": assets,
+            "storage": "supabase", "timestamp": now()
+        }
+    except Exception as exc:
+        raise HTTPException(503, "Lecture de la surface d'attaque Supabase impossible : " + str(exc)[:350]) from None
+
+
+@app.post("/api/network/attack-surface-scan")
+async def run_attack_surface_scan(request: Request, authorization: str | None = Header(default=None)):
+    actor = require_analyst(authorization)
+    if not supabase_public_configured():
+        raise HTTPException(503, "SUPABASE_SERVICE_ROLE_KEY doit être configurée côté API.")
+    data = await request.json()
+    cidr = str(data.get("cidr") or "").strip()
+    try:
+        network = validate_network(cidr)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    stamp = now()
+    run_row = supabase_public_request("soc_scan_runs", "POST", {
+        "scan_type": "port_scan", "target": str(network), "status": "running",
+        "started_by": actor, "started_at": stamp, "metadata": {"scope": "authorized_private_lan", "scanner": "Congo Sec Vision"}
+    })
+    scan_id = run_row[0]["id"] if isinstance(run_row, list) and run_row else None
+    try:
+        try:
+            ping_hosts = discover_network(str(network))
+        except Exception:
+            ping_hosts = []
+        scan = scan_network_ports(str(network))
+        host_map = {x["ip_address"]: {"ip_address": x["ip_address"], "hostname": x.get("hostname", ""), "open_ports": []}
+                    for x in ping_hosts}
+        for item in scan["hosts"]:
+            host_map.setdefault(item["ip_address"], item)
+            if item.get("hostname"):
+                host_map[item["ip_address"]]["hostname"] = item["hostname"]
+            host_map[item["ip_address"]]["open_ports"] = item.get("open_ports", [])
+        hosts = sorted(host_map.values(), key=lambda x: ipaddress.ip_address(x["ip_address"]))
+
+        asset_by_ip = {}
+        with conn() as db:
+            for row in db.execute("SELECT id,ip_addresses FROM assets").fetchall():
+                try:
+                    addresses = json.loads(row["ip_addresses"] or "[]")
+                except (TypeError, ValueError):
+                    addresses = []
+                for address in addresses:
+                    value = address.get("address") if isinstance(address, dict) else address
+                    clean = str(value or "").split("%", 1)[0]
+                    if clean:
+                        asset_by_ip[clean] = row["id"]
+
+        device_payload = []
+        for host in hosts:
+            opened = host.get("open_ports") or []
+            device_payload.append({
+                "ip_address": host["ip_address"], "network_cidr": str(network),
+                "hostname": str(host.get("hostname") or "")[:255],
+                "device_type": "server" if any(p["port"] in (22, 80, 443, 445, 3389, 5432, 3306) for p in opened) else "unknown",
+                "status": "active", "discovery_method": "icmp+authorized-tcp-scan",
+                "confidence": 0.9 if opened else 0.65, "authorized_scope": True,
+                "first_seen": stamp, "last_seen": stamp, "last_scan_at": stamp,
+                "metadata": {"open_ports_count": len(opened), "scan_id": scan_id, "source": "network-scan"}
+            })
+        saved_devices = []
+        if device_payload:
+            saved_devices = supabase_public_request(
+                "soc_network_devices?on_conflict=network_cidr,ip_address", "POST", device_payload
+            )
+        device_ids = {str(x.get("ip_address")): x.get("id") for x in (saved_devices or [])}
+        if len(device_ids) < len(device_payload):
+            rows = supabase_public_request(
+                "soc_network_devices?select=id,ip_address&network_cidr=eq." + urllib.parse.quote(str(network), safe=""),
+                "GET"
+            )
+            device_ids.update({str(x.get("ip_address")): x.get("id") for x in rows})
+
+        port_payload = []
+        for host in hosts:
+            ip = host["ip_address"]
+            for port in host.get("open_ports") or []:
+                port_payload.append({
+                    "network_device_id": device_ids.get(ip), "asset_id": asset_by_ip.get(ip),
+                    "scan_run_id": scan_id, "ip_address": ip, "protocol": "tcp",
+                    "port": int(port["port"]), "state": "open",
+                    "service_name": str(port.get("service_name") or "")[:120],
+                    "product": str(port.get("product") or "")[:160],
+                    "version": str(port.get("version") or "")[:160],
+                    "banner": str(port.get("banner") or "")[:512],
+                    "confidence": float(port.get("confidence") or 0.75),
+                    "source": "authorized-network-tcp-scan", "first_seen": stamp, "last_seen": stamp
+                })
+        if port_payload:
+            for offset in range(0, len(port_payload), 200):
+                supabase_public_request(
+                    "soc_listening_ports?on_conflict=ip_address,protocol,port", "POST",
+                    port_payload[offset:offset + 200]
+                )
+
+        cve_rows = []
+        product_cache = set()
+        service_vendor = {
+            "openssh": "OpenBSD", "apache http server": "Apache Software Foundation",
+            "nginx": "F5", "microsoft iis": "Microsoft", "vsftpd": "Chris Evans",
+            "proftpd": "ProFTPD Project"
+        }
+        for host in hosts:
+            for port in host.get("open_ports") or []:
+                product = str(port.get("product") or "").strip()
+                version = str(port.get("version") or "").strip()
+                if not product or not version:
+                    continue
+                vendor = next((v for k, v in service_vendor.items() if k in product.lower()), "")
+                cache_key = (product.lower(), version, vendor.lower())
+                if cache_key in product_cache or len(product_cache) >= 8:
+                    continue
+                product_cache.add(cache_key)
+                try:
+                    matches = scan_product(product, version, vendor, NVD_API_KEY)
+                except Exception:
+                    continue
+                for match in matches[:30]:
+                    cve_rows.append({
+                        "asset_id": asset_by_ip.get(host["ip_address"]),
+                        "network_device_id": device_ids.get(host["ip_address"]),
+                        "ip_address": host["ip_address"], "port": int(port["port"]),
+                        "service_name": str(port.get("service_name") or ""),
+                        "cve_id": match.get("cve_id"), "severity": match.get("severity") or "unknown",
+                        "title": match.get("title") or "", "status": "needs-validation",
+                        "source": "NVD service-version candidate", "created_at": stamp,
+                        "software_name": product, "software_version": version, "vendor": vendor,
+                        "match_confidence": match.get("match_confidence") or "candidate",
+                        "cve_url": match.get("cve_url") or "",
+                        "cvss_score": match.get("cvss_score"), "cvss_version": match.get("cvss_version") or "",
+                        "cvss_vector": match.get("cvss_vector") or "", "cwe_ids": match.get("cwe_ids") or [],
+                        "epss_score": match.get("epss_score"), "epss_percentile": match.get("epss_percentile"),
+                        "known_exploited": bool(match.get("known_exploited")),
+                        "published_at": match.get("published"), "last_modified_at": match.get("last_modified"),
+                        "cpe_matches": match.get("cpe_matches") or [], "references_json": match.get("references") or [],
+                        "affected_json": match.get("affected") or [], "sources_json": match.get("sources") or [],
+                        "ssvc_json": match.get("ssvc") or []
+                    })
+        if cve_rows:
+            for offset in range(0, len(cve_rows), 100):
+                supabase_public_request(
+                    "vulnerabilities?on_conflict=network_device_id,cve_id", "POST", cve_rows[offset:offset + 100]
+                )
+
+        summary = {
+            "targets_checked": scan["targets_checked"], "hosts_discovered": len(hosts),
+            "hosts_with_open_ports": scan["hosts_with_open_ports"], "open_ports": len(port_payload),
+            "versioned_services": len(product_cache), "cve_candidates": len(cve_rows),
+            "ping_discovered": len(ping_hosts), "protocol": "TCP"
+        }
+        if scan_id:
+            supabase_public_request("soc_scan_runs?id=eq." + str(scan_id), "PATCH", {
+                "status": "completed", "completed_at": now(), "summary": summary
+            })
+        audit("network.attack_surface_scan", str(network), json.dumps(summary, ensure_ascii=False), actor)
+        return {"scan_id": scan_id, "network": str(network), "summary": summary,
+                "hosts": hosts, "limitations": scan["limitations"]}
+    except Exception as exc:
+        if scan_id:
+            try:
+                supabase_public_request("soc_scan_runs?id=eq." + str(scan_id), "PATCH", {
+                    "status": "failed", "completed_at": now(), "summary": {"error": str(exc)[:300]}
+                })
+            except Exception:
+                pass
+        raise HTTPException(502, "Scan réseau interrompu : " + str(exc)[:300]) from None
 
 
 @app.get("/api/network/discovery")
