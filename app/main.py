@@ -915,6 +915,53 @@ def software(authorization:str|None=Header(default=None)):
         rows=c.execute("SELECT s.*,a.hostname FROM software s LEFT JOIN assets a ON a.id=s.asset_id ORDER BY s.name").fetchall()
     return [dict(r) for r in rows]
 
+def sync_asset_cves_to_supabase(asset_ids):
+    if not supabase_public_configured():
+        return {"status": "not-configured", "rows": 0}
+    total = 0
+    try:
+        for asset_id in sorted({str(x) for x in asset_ids if x}):
+            with conn() as db:
+                rows = db.execute("SELECT * FROM vulnerabilities WHERE asset_id=? ORDER BY cvss_score DESC, created_at DESC", (asset_id,)).fetchall()
+            payload = []
+            for row in rows:
+                item = dict(row)
+                def parsed_list(key):
+                    try:
+                        value = json.loads(item.get(key) or "[]")
+                        return value if isinstance(value, list) else []
+                    except (ValueError, TypeError):
+                        return []
+                payload.append({
+                    "asset_id": asset_id, "cve_id": item.get("cve_id"),
+                    "severity": item.get("severity") or "unknown", "title": item.get("title") or "",
+                    "status": item.get("status") or "needs-validation",
+                    "source": item.get("source") or "NVD CVE API",
+                    "created_at": item.get("created_at") or now(),
+                    "software_name": item.get("software_name") or "",
+                    "software_version": item.get("software_version") or "",
+                    "vendor": item.get("vendor") or "",
+                    "match_confidence": item.get("match_confidence") or "candidate",
+                    "cve_url": item.get("cve_url") or "",
+                    "cvss_score": item.get("cvss_score"), "cvss_version": item.get("cvss_version") or "",
+                    "cvss_vector": item.get("cvss_vector") or "", "cwe_ids": parsed_list("cwe_ids"),
+                    "cpe_matches": parsed_list("cpe_matches"), "references_json": parsed_list("references_json"),
+                    "epss_score": item.get("epss_score"), "epss_percentile": item.get("epss_percentile"),
+                    "known_exploited": bool(item.get("known_exploited")),
+                    "published_at": item.get("published_at") or None,
+                    "last_modified_at": item.get("last_modified_at") or None,
+                    "sources_json": parsed_list("sources_json"), "ssvc_json": parsed_list("ssvc_json"),
+                    "affected_json": parsed_list("affected_json"), "assigned_to": item.get("assigned_to") or "",
+                    "tags": parsed_list("tags_json")
+                })
+            for offset in range(0, len(payload), 100):
+                supabase_public_request("vulnerabilities?on_conflict=asset_id,cve_id", "POST", payload[offset:offset + 100])
+            total += len(payload)
+        return {"status": "ok", "rows": total}
+    except Exception as exc:
+        return {"status": "error", "rows": total, "message": str(exc)[:350]}
+
+
 def _run_cve_sync_locked(limit=25):
     with conn() as c:
         settings=c.execute("SELECT value FROM system_settings WHERE key='cve_scan_offset'").fetchone()
@@ -983,8 +1030,9 @@ def _run_cve_sync_locked(limit=25):
         next_offset=0 if offset+len(products)>=total else offset+len(products)
         c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('cve_scan_offset',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(str(next_offset),now()))
         c.execute("INSERT INTO system_settings(key,value,updated_at) VALUES('last_cve_sync',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(now(),now()))
+    supabase_cve_sync = sync_asset_cves_to_supabase([p["asset_id"] for p in products])
     return {'software_checked':checked,'software_total':total,'candidate_records_added':added,'records_refreshed':refreshed,
-      'version_range_matches':matched,'errors':errors,'last_sync':now(),
+      'version_range_matches':matched,'errors':errors,'last_sync':now(),'supabase_cve_sync':supabase_cve_sync,
       'warning':'Une correspondance CPE/version reste un candidat à valider, pas une preuve d’exposition. Vérifier l’édition, les correctifs rétroportés et l’avis éditeur.'}
 
 _CVE_SYNC_LOCK = threading.Lock()
@@ -1069,7 +1117,7 @@ def surveillance_attack_surface(authorization: str | None = Header(default=None)
         protection = supabase_public_request("soc_endpoint_protection?select=*&order=observed_at.desc&limit=1000", "GET")
         malware = supabase_public_request("soc_malware_detections?select=*&order=detected_at.desc&limit=1000", "GET")
         software = supabase_public_request("software?select=*&order=last_seen.desc&limit=3000", "GET")
-        vulnerabilities = supabase_public_request("vulnerabilities?select=*&network_device_id=not.is.null&order=cvss_score.desc&limit=2000", "GET")
+        vulnerabilities = supabase_public_request("vulnerabilities?select=*&order=cvss_score.desc&limit=3000", "GET")
         assets = supabase_public_request("assets?select=id,hostname,platform,ip_addresses,os_install_date,os_install_date_source,last_seen&limit=1000", "GET")
         asset_names = {x.get("id"): x.get("hostname") for x in assets}
         for row in ports:
