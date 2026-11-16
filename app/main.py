@@ -271,7 +271,7 @@ def sync_asset_to_supabase(asset_id, data):
         "hostname":str(data.get("hostname") or "unknown")[:255],
         "platform":str(data.get("platform") or "unknown")[:80],
         "ip_addresses":data.get("ip_addresses",[]),
-        "inventory":data,
+        "inventory":{k:data.get(k) for k in ("cpu_percent","memory_percent","disk_percent","virtualization","interfaces","agent_version","platform_release","architecture","processor","collected_at") if k in data},
         "first_seen":first_seen,
         "last_seen":stamp,
     }
